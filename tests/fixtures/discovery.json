@@ -1,0 +1,20 @@
+{
+  "articles": [
+    {
+      "title": "Allowed AI report",
+      "url": "https://www.reuters.com/technology/allowed-ai-report",
+      "seendate": "20260824T110000Z",
+      "socialimage": "",
+      "domain": "reuters.com",
+      "language": "English"
+    },
+    {
+      "title": "Untrusted AI report",
+      "url": "https://untrusted.example/ai-report",
+      "seendate": "20260824T110000Z",
+      "socialimage": "",
+      "domain": "untrusted.example",
+      "language": "English"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+[
+  {
+    "html_url": "https://github.com/acme/widget/releases/tag/v2.0.0",
+    "tag_name": "v2.0.0",
+    "name": "",
+    "body": "Major <strong>improvements</strong>.",
+    "published_at": "2026-08-24T10:00:00Z",
+    "draft": false
+  },
+  {
+    "html_url": "https://github.com/acme/widget/releases/tag/v1.0.0",
+    "tag_name": "v1.0.0",
+    "name": "v1.0.0",
+    "body": null,
+    "published_at": "2026-08-22T10:00:00Z",
+    "draft": false
+  }
+]
