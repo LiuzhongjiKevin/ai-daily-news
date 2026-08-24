@@ -25,10 +25,12 @@ class StateStore:
     def save_snapshot(self, day: date, snapshots: list[RepoSnapshot]) -> Path:
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         path = self.snapshot_dir / f"{day.isoformat()}.json"
-        path.write_text(
+        temporary = self.snapshot_dir / f"{day.isoformat()}.json.tmp"
+        temporary.write_text(
             TypeAdapter(list[RepoSnapshot]).dump_json(snapshots, indent=2).decode(),
             "utf-8",
         )
+        temporary.replace(path)
         return path
 
     def load_snapshot(self, day: date) -> list[RepoSnapshot]:

@@ -33,6 +33,29 @@ def test_snapshot_round_trip_preserves_timezone_aware_datetimes(tmp_path: Path) 
     assert loaded[0].collected_at.tzinfo is not None
 
 
+def test_snapshot_save_atomically_replaces_temporary_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    replacements: list[tuple[Path, Path]] = []
+    original_replace = Path.replace
+
+    def record_replace(self: Path, target: Path) -> Path:
+        replacements.append((self, target))
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", record_replace)
+    store = StateStore(tmp_path)
+    store.save_snapshot(date(2026, 8, 24), [])
+
+    assert replacements == [
+        (
+            tmp_path / "github" / "2026-08-24.json.tmp",
+            tmp_path / "github" / "2026-08-24.json",
+        )
+    ]
+    assert not (tmp_path / "github" / "2026-08-24.json.tmp").exists()
+
+
 def test_missing_snapshot_returns_empty_list(tmp_path: Path) -> None:
     assert StateStore(tmp_path).load_snapshot(date(2026, 8, 24)) == []
 
