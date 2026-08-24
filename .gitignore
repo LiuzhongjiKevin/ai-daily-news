@@ -1,1 +1,8 @@
 .worktrees/
+.env
+.venv/
+.pytest_cache/
+__pycache__/
+*.log
+preview/
+data/microsoft-token.json

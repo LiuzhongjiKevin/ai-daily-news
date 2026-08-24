@@ -1,0 +1,7 @@
+effective_date: 2026-08-24
+currency: USD
+models:
+  deepseek-v4-flash:
+    input_cache_hit: 0.014
+    input_cache_miss: 0.44
+    output: 1.32
