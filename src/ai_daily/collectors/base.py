@@ -1,12 +1,26 @@
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol
+from urllib.parse import urlsplit, urlunsplit
 
+import httpx
 import yaml
 from dateutil import parser
 from pydantic import BaseModel, Field, HttpUrl
 
 from ai_daily.models import RawItem
+
+
+class SourceParseError(ValueError):
+    """A source responded successfully but did not match its configured transport/shape."""
+
+
+class FeedParseError(SourceParseError):
+    pass
+
+
+class PageParseError(SourceParseError):
+    pass
 
 
 class SourceConfig(BaseModel):
@@ -47,6 +61,36 @@ def require_since_aware(since: datetime) -> datetime:
     return parse_datetime(since)
 
 
+def format_collection_error(exc: Exception) -> str:
+    """Return a concise, secret-safe source failure diagnostic without response bodies."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        content_type = exc.response.headers.get("content-type", "unknown").split(";", 1)[0]
+        return (
+            f"HTTP {exc.response.status_code} content-type={content_type} "
+            f"url={redact_url(str(exc.request.url))}"
+        )
+    if isinstance(exc, httpx.RequestError):
+        return f"{type(exc).__name__} url={redact_url(str(exc.request.url))}"
+    if isinstance(exc, SourceParseError):
+        return f"{type(exc).__name__}: {exc}"
+    return type(exc).__name__
+
+
+def format_source_failure(source: SourceConfig, exc: Exception) -> str:
+    """Attach the configured endpoint to diagnostics that do not carry a request."""
+    diagnostic = format_collection_error(exc)
+    if " url=" not in diagnostic:
+        return f"{diagnostic} url={redact_url(str(source.url))}"
+    return diagnostic
+
+
+def redact_url(url: str) -> str:
+    """Keep the endpoint useful while ensuring query credentials never enter a warning."""
+    parsed = urlsplit(url)
+    base = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    return f"{base}?<redacted>" if parsed.query else base
+
+
 class CollectorRegistry:
     def __init__(self, collectors: dict[str, Collector]) -> None:
         self.collectors = collectors
@@ -60,5 +104,5 @@ class CollectorRegistry:
             try:
                 items.extend(self.collectors[source.kind].collect(source, since))
             except Exception as exc:  # noqa: BLE001 - isolate every source failure at this boundary
-                warnings.append(f"{source.id}: {type(exc).__name__}")
+                warnings.append(f"{source.id}: {format_source_failure(source, exc)}")
         return items, warnings

@@ -6,7 +6,12 @@ from urllib.parse import urljoin
 import feedparser
 from bs4 import BeautifulSoup
 
-from ai_daily.collectors.base import SourceConfig, parse_datetime, require_since_aware
+from ai_daily.collectors.base import (
+    FeedParseError,
+    SourceConfig,
+    parse_datetime,
+    require_since_aware,
+)
 from ai_daily.http import RetryingClient
 from ai_daily.models import RawItem
 
@@ -26,6 +31,12 @@ class FeedCollector:
     def collect(self, source: SourceConfig, since: datetime) -> list[RawItem]:
         response = self.client.get(str(source.url))
         parsed = feedparser.parse(response.content)
+        if not parsed.version:
+            raise FeedParseError("invalid feed: unrecognised document")
+        if parsed.bozo and not parsed.entries:
+            error = parsed.get("bozo_exception")
+            detail = type(error).__name__ if error is not None else "parser error"
+            raise FeedParseError(f"invalid feed: {detail}")
         cutoff = require_since_aware(since)
         rows: list[RawItem] = []
         for entry in parsed.entries:

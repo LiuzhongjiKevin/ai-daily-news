@@ -2,8 +2,14 @@ from datetime import datetime
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, Tag
+from pydantic import ValidationError
 
-from ai_daily.collectors.base import SourceConfig, parse_datetime, require_since_aware
+from ai_daily.collectors.base import (
+    PageParseError,
+    SourceConfig,
+    parse_datetime,
+    require_since_aware,
+)
 from ai_daily.http import RetryingClient
 from ai_daily.models import RawItem
 
@@ -24,15 +30,21 @@ class PageCollector:
         response = self.client.get(str(source.url))
         document = BeautifulSoup(response.content, "html.parser")
         cutoff = require_since_aware(since)
-        rows: list[RawItem] = []
-        for item in document.select(source.item_selector):
-            parsed = self._parse_item(item, source, cutoff)
+        cards = document.select(source.item_selector)
+        if not cards:
+            raise PageParseError(f"page selector mismatch: {source.item_selector!r} matched 0 cards")
+        parsed_cards: list[RawItem] = []
+        for item in cards:
+            parsed = self._parse_item(item, source)
             if parsed is not None:
-                rows.append(parsed)
+                parsed_cards.append(parsed)
+        if not parsed_cards:
+            raise PageParseError(f"page selector mismatch: matched {len(cards)} cards but parsed 0")
+        rows = [item for item in parsed_cards if item.published_at >= cutoff]
         return rows
 
     @staticmethod
-    def _parse_item(item: Tag, source: SourceConfig, cutoff: datetime) -> RawItem | None:
+    def _parse_item(item: Tag, source: SourceConfig) -> RawItem | None:
         assert source.title_selector and source.link_selector and source.date_selector
         title_node = item.select_one(source.title_selector)
         link_node = item.select_one(source.link_selector)
@@ -48,21 +60,24 @@ class PageCollector:
         except (TypeError, ValueError):
             return None
         title = title_node.get_text(" ", strip=True)
-        if published < cutoff or not title:
+        if not title:
             return None
         excerpt = ""
         if source.excerpt_selector:
             excerpt_node = item.select_one(source.excerpt_selector)
             if excerpt_node is not None:
                 excerpt = excerpt_node.get_text(" ", strip=True)
-        return RawItem(
-            source_id=source.id,
-            source_name=source.name,
-            source_type=source.source_type,
-            title=title,
-            published_at=published,
-            canonical_url=urljoin(str(source.url), href),
-            excerpt=excerpt,
-            language=source.language,
-            category=source.category,
-        )
+        try:
+            return RawItem(
+                source_id=source.id,
+                source_name=source.name,
+                source_type=source.source_type,
+                title=title,
+                published_at=published,
+                canonical_url=urljoin(str(source.url), href),
+                excerpt=excerpt,
+                language=source.language,
+                category=source.category,
+            )
+        except ValidationError:
+            return None

@@ -4,7 +4,12 @@ from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 
-from ai_daily.collectors.base import SourceConfig, parse_datetime, require_since_aware
+from ai_daily.collectors.base import (
+    SourceConfig,
+    SourceParseError,
+    parse_datetime,
+    require_since_aware,
+)
 from ai_daily.http import RetryingClient
 from ai_daily.models import RawItem
 
@@ -15,7 +20,11 @@ class GitHubReleaseCollector:
 
     def collect(self, source: SourceConfig, since: datetime) -> list[RawItem]:
         response = self.client.get(self._releases_url(source), headers={"Accept": "application/vnd.github+json"})
-        releases = response.json()
+        try:
+            releases = response.json()
+        except ValueError as exc:
+            content_type = response.headers.get("content-type", "unknown").split(";", 1)[0]
+            raise SourceParseError(f"invalid GitHub releases JSON content-type={content_type}") from exc
         if not isinstance(releases, list):
             raise TypeError("GitHub releases response is not a list")
         cutoff = require_since_aware(since)

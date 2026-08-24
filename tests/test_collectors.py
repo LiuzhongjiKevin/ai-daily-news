@@ -4,7 +4,15 @@ from pathlib import Path
 import httpx
 import pytest
 
-from ai_daily.collectors.base import CollectorRegistry, SourceConfig
+from ai_daily.collectors.base import (
+    CollectorRegistry,
+    FeedParseError,
+    PageParseError,
+    SourceConfig,
+    SourceParseError,
+    format_collection_error,
+    format_source_failure,
+)
 from ai_daily.collectors.discovery import DiscoveryCollector
 from ai_daily.collectors.feed import FeedCollector
 from ai_daily.collectors.github import GitHubReleaseCollector
@@ -63,6 +71,43 @@ def test_feed_collector_maps_entries_and_discards_old_items(http_client: Fixture
     assert items[0].published_at == datetime(2026, 8, 24, 8, 30, tzinfo=UTC)
 
 
+def test_feed_collector_rejects_malformed_content_that_has_no_entries(
+    http_client: FixtureClient,
+) -> None:
+    """Would catch an HTML denial page being falsely accepted as a valid empty feed."""
+    source = SourceConfig(
+        id="broken-feed",
+        name="Broken feed",
+        kind="feed",
+        source_type="official",
+        url="https://example.test/broken-feed.xml",
+        language="en",
+        category="model",
+    )
+    http_client.responses[str(source.url)] = b"<html><title>Access denied</title></html>"
+
+    with pytest.raises(FeedParseError, match="invalid feed"):
+        FeedCollector(http_client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
+
+
+def test_feed_collector_accepts_a_valid_empty_feed(http_client: FixtureClient) -> None:
+    """Would catch valid empty publisher feeds being misreported as malformed transports."""
+    source = SourceConfig(
+        id="empty-feed",
+        name="Empty feed",
+        kind="feed",
+        source_type="official",
+        url="https://example.test/empty-feed.xml",
+        language="en",
+        category="model",
+    )
+    http_client.responses[str(source.url)] = (
+        b'<?xml version="1.0"?><rss version="2.0"><channel><title>Empty</title></channel></rss>'
+    )
+
+    assert FeedCollector(http_client).collect(source, datetime(2026, 8, 23, tzinfo=UTC)) == []
+
+
 def test_page_collector_uses_configured_selectors_and_resolves_relative_links(
     http_client: FixtureClient,
 ) -> None:
@@ -88,6 +133,55 @@ def test_page_collector_uses_configured_selectors_and_resolves_relative_links(
     assert str(items[0].canonical_url) == "https://example.test/releases/page-announcement"
     assert items[0].excerpt == "Details without markup."
     assert items[0].published_at == datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
+
+
+def test_page_collector_reports_a_selector_mismatch_instead_of_returning_empty(
+    http_client: FixtureClient,
+) -> None:
+    """Would catch a changed page card shape being silently treated as no news."""
+    source = SourceConfig(
+        id="newsroom",
+        name="Example Newsroom",
+        kind="page",
+        source_type="official",
+        url="https://example.test/news",
+        language="en",
+        category="company",
+        item_selector="article.story",
+        title_selector="h2",
+        link_selector="a.read-more",
+        date_selector="time.missing",
+        excerpt_selector="p.summary",
+    )
+
+    with pytest.raises(PageParseError, match="matched 2 cards but parsed 0"):
+        PageCollector(http_client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
+
+
+def test_page_collector_reports_invalid_card_urls_as_a_source_shape_error(
+    http_client: FixtureClient,
+) -> None:
+    """Would catch invalid page links escaping as opaque Pydantic validation errors."""
+    source = SourceConfig(
+        id="newsroom",
+        name="Example Newsroom",
+        kind="page",
+        source_type="official",
+        url="https://example.test/invalid-card",
+        language="en",
+        category="company",
+        item_selector="article",
+        title_selector="h2",
+        link_selector="a",
+        date_selector="time",
+    )
+    http_client.responses[str(source.url)] = (
+        b"<article><h2>Bad card</h2><a href='mailto:news@example.test'>Read</a>"
+        b"<time datetime='2026-08-24T09:00:00Z'></time></article>"
+    )
+
+    with pytest.raises(PageParseError, match="matched 1 cards but parsed 0"):
+        PageCollector(http_client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
 
 
 def test_github_release_collector_maps_api_releases(http_client: FixtureClient) -> None:
@@ -133,6 +227,26 @@ def test_discovery_collector_filters_every_result_not_in_the_domain_allowlist(
     assert http_client.requests[-1][1]["params"]["format"] == "json"  # type: ignore[index]
 
 
+def test_discovery_collector_reports_non_json_transport_without_a_response_body(
+    http_client: FixtureClient,
+) -> None:
+    """Would catch an HTML error page being reduced to an unactionable JSON decoder class."""
+    source = SourceConfig(
+        id="reuters-discovery",
+        name="Reuters AI",
+        kind="discovery",
+        source_type="discovery",
+        url="https://api.gdeltproject.org/api/v2/doc/doc",
+        language="en",
+        category="industry",
+        allowed_domains=["reuters.com"],
+    )
+    http_client.responses[str(source.url)] = b"<html><title>Rate limited</title></html>"
+
+    with pytest.raises(SourceParseError, match="invalid discovery JSON content-type=unknown"):
+        DiscoveryCollector(http_client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
+
+
 def test_registry_isolates_one_source_failure_while_returning_other_source_items(
     http_client: FixtureClient,
 ) -> None:
@@ -152,7 +266,76 @@ def test_registry_isolates_one_source_failure_while_returning_other_source_items
     items, warnings = registry.collect_all([valid, failing], datetime(2026, 8, 23, tzinfo=UTC))
 
     assert [item.source_id for item in items] == ["deepmind"]
-    assert warnings == ["unavailable: HTTPStatusError"]
+    assert warnings == [
+        "unavailable: HTTP 404 content-type=unknown url=https://example.test/missing.xml"
+    ]
+
+
+def test_registry_warning_contains_redacted_actionable_http_diagnostics() -> None:
+    """Would catch source warnings that hide status, media type, or leak request query secrets."""
+    request = httpx.Request("GET", "https://example.test/feed.xml?token=secret")
+    response = httpx.Response(429, headers={"content-type": "text/html"}, request=request)
+    error = httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    diagnostic = format_collection_error(error)
+
+    assert "HTTP 429" in diagnostic
+    assert "content-type=text/html" in diagnostic
+    assert "https://example.test/feed.xml?<redacted>" in diagnostic
+    assert "secret" not in diagnostic
+
+
+def test_registry_adds_a_redacted_endpoint_to_page_parse_diagnostics(
+    http_client: FixtureClient,
+) -> None:
+    """Would catch an actionable parser error being detached from the failing source endpoint."""
+    source = SourceConfig(
+        id="bad-page",
+        name="Bad page",
+        kind="page",
+        source_type="official",
+        url="https://example.test/news?token=secret",
+        language="en",
+        category="company",
+        item_selector=".missing",
+        title_selector="h2",
+        link_selector="a",
+        date_selector="time",
+    )
+    http_client.responses[str(source.url)] = (FIXTURES / "news_page.html").read_bytes()
+    registry = CollectorRegistry({"page": PageCollector(http_client)})
+
+    _, warnings = registry.collect_all([source], datetime(2026, 8, 23, tzinfo=UTC))
+
+    assert warnings == [
+        (
+            "bad-page: PageParseError: page selector mismatch: '.missing' matched 0 cards "
+            "url=https://example.test/news?<redacted>"
+        )
+    ]
+    assert "secret" not in warnings[0]
+
+
+def test_format_source_failure_includes_a_redacted_configured_endpoint() -> None:
+    """Would catch non-HTTP failures losing the endpoint needed to repair their configuration."""
+    source = SourceConfig(
+        id="bad-page",
+        name="Bad page",
+        kind="page",
+        source_type="official",
+        url="https://example.test/news?token=secret",
+        language="en",
+        category="company",
+        item_selector="article",
+        title_selector="h2",
+        link_selector="a",
+        date_selector="time",
+    )
+
+    diagnostic = format_source_failure(source, PageParseError("page returned zero valid cards"))
+
+    assert diagnostic.endswith("url=https://example.test/news?<redacted>")
+    assert "secret" not in diagnostic
 
 
 def test_load_sources_excludes_disabled_entries(tmp_path: Path) -> None:

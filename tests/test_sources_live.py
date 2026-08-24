@@ -4,7 +4,34 @@ from pathlib import Path
 import pytest
 
 from ai_daily.collectors import build_collector_registry, load_sources
+from ai_daily.collectors.base import PageParseError, SourceConfig, format_source_failure
 from ai_daily.http import RetryingClient
+
+
+def validate_collected_items(source: SourceConfig, items: list[object]) -> None:
+    """An empty page is not a successful validation: it lacks a parseable source card."""
+    if source.kind == "page" and not items:
+        raise PageParseError("page returned zero valid cards")
+
+
+def test_live_validation_rejects_an_empty_page_result() -> None:
+    """Would catch a page selector mismatch being reported as a successful live source check."""
+    source = SourceConfig(
+        id="empty-page",
+        name="Empty page",
+        kind="page",
+        source_type="official",
+        url="https://example.test/news",
+        language="en",
+        category="company",
+        item_selector="article",
+        title_selector="h2",
+        link_selector="a",
+        date_selector="time",
+    )
+
+    with pytest.raises(PageParseError, match="zero valid cards"):
+        validate_collected_items(source, [])
 
 
 @pytest.mark.live
@@ -13,14 +40,16 @@ def test_enabled_sources_fetch_and_parse_without_collector_errors() -> None:
     sources = load_sources(Path("config/sources.yaml"))
     client = RetryingClient(max_attempts=1)
     registry = build_collector_registry(client)
-    since = datetime.now(UTC) - timedelta(days=2)
+    # This is a source-shape smoke test, not the daily collection horizon: a 90-day
+    # window avoids misclassifying a valid but quiet newsroom as an empty adapter.
+    since = datetime.now(UTC) - timedelta(days=90)
     failures: list[str] = []
 
     for source in sources:
         try:
             result = registry.collectors[source.kind].collect(source, since)
-            assert isinstance(result, list)
+            validate_collected_items(source, result)
         except Exception as exc:  # noqa: BLE001 - one report must include every live source failure
-            failures.append(f"{source.id}: {type(exc).__name__}")
+            failures.append(f"{source.id}: {format_source_failure(source, exc)}")
 
     assert not failures, "enabled source validation failed: " + ", ".join(failures)

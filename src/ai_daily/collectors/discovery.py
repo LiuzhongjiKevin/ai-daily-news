@@ -2,7 +2,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
-from ai_daily.collectors.base import SourceConfig, parse_datetime, require_since_aware
+from ai_daily.collectors.base import (
+    SourceConfig,
+    SourceParseError,
+    parse_datetime,
+    require_since_aware,
+)
 from ai_daily.http import RetryingClient
 from ai_daily.models import RawItem
 
@@ -31,7 +36,11 @@ class DiscoveryCollector:
                 "enddatetime": end.strftime("%Y%m%d%H%M%S"),
             },
         )
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            content_type = response.headers.get("content-type", "unknown").split(";", 1)[0]
+            raise SourceParseError(f"invalid discovery JSON content-type={content_type}") from exc
         articles = payload.get("articles", []) if isinstance(payload, dict) else []
         cutoff = require_since_aware(since)
         rows: list[RawItem] = []

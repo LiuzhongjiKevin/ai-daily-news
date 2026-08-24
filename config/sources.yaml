@@ -1,6 +1,6 @@
 # Every domain below is controlled by the named company, except the explicit media
-# discovery entries.  Page selectors are intentionally conservative: a changed
-# newsroom layout yields an empty result rather than guessed links.
+# discovery entries. Page selectors are source-shape contracts: a changed newsroom
+# layout is surfaced as a source warning rather than guessed links or an empty success.
 sources:
   - {id: kimi, name: "Kimi / 月之暗面", kind: page, source_type: official, url: "https://www.moonshot.cn/", language: zh, category: model, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p"}
   - {id: glm, name: "GLM / 智谱", kind: page, source_type: official, url: "https://www.zhipuai.cn/", language: zh, category: model, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p"}
@@ -22,7 +22,9 @@ sources:
   - {id: google-deepmind, name: "Google DeepMind", kind: page, source_type: official, url: "https://deepmind.google/discover/blog/", language: en, category: research, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p"}
   - {id: google-ai, name: "Google AI", kind: page, source_type: official, url: "https://blog.google/technology/ai/", language: en, category: company, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p"}
   - {id: meta-ai, name: "Meta AI", kind: page, source_type: official, url: "https://ai.meta.com/blog/", language: en, category: research, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p"}
-  - {id: microsoft-ai, name: "Microsoft AI", kind: page, source_type: official, url: "https://blogs.microsoft.com/ai/", language: en, category: company, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p"}
+  # Verified 2026-08-24: the former /ai/ category path is a first-party 404;
+  # this is the official WordPress feed for the Microsoft Blog.
+  - {id: microsoft-ai, name: "Microsoft AI", kind: feed, source_type: official, url: "https://blogs.microsoft.com/feed/", language: en, category: company}
   - {id: xai, name: xAI, kind: page, source_type: official, url: "https://x.ai/news", language: en, category: company, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p"}
   - {id: mistral, name: Mistral AI, kind: page, source_type: official, url: "https://mistral.ai/news/", language: en, category: company, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p"}
   - {id: cohere, name: Cohere, kind: page, source_type: official, url: "https://cohere.com/blog", language: en, category: company, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p"}
