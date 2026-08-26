@@ -1,0 +1,10 @@
+{
+  "selected_cluster_ids": ["cluster-one"],
+  "items": [
+    {
+      "cluster_id": "cluster-one",
+      "summary": "A concise model-launch summary.",
+      "why_it_matters": "It changes the available capabilities."
+    }
+  ]
+}
