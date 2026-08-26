@@ -69,6 +69,20 @@ def historical_candidate_names(store: StateStore, today: date, window_days: int 
     return [snapshot.repository for snapshot in history]
 
 
+def _retained_snapshots(store: StateStore, today: date, retention_days: int) -> list[RepoSnapshot]:
+    """Load the bounded retained history oldest first for repository-specific trial baselines."""
+    snapshots: list[RepoSnapshot] = []
+    for day in sorted(
+        store.recent_snapshot_days(
+            today,
+            limit=retention_days,
+            retention_days=retention_days,
+        )
+    ):
+        snapshots.extend(store.load_snapshot(day))
+    return snapshots
+
+
 def rank_and_store_repositories(
     store: StateStore,
     today: date,
@@ -79,13 +93,13 @@ def rank_and_store_repositories(
     retention_days: int = 35,
 ) -> list[RankedRepo]:
     """Rank before atomically saving the current snapshot, then prune retained history."""
-    baseline, has_full_baseline, history = load_recent_snapshots(store, today, window_days)
+    exact_baseline = store.load_snapshot(today - timedelta(days=window_days))
     ranked = rank_repositories(
         current,
-        baseline,
+        exact_baseline,
         top_n,
-        has_full_baseline=has_full_baseline,
-        fallback=history,
+        has_full_baseline=bool(exact_baseline),
+        fallback=_retained_snapshots(store, today, retention_days),
     )
     store.save_snapshot(today, current)
     store.prune_snapshots(today, retention_days)

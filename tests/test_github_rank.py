@@ -215,6 +215,22 @@ def test_ranking_uses_each_repositories_oldest_fallback_when_exact_file_lacks_it
     ]
 
 
+def test_ranking_finds_a_repositories_oldest_retained_fallback_beyond_candidate_history(
+    tmp_path: Path,
+) -> None:
+    """Would catch a per-repository baseline lookup limited to the seven candidate snapshot dates."""
+    store = StateStore(tmp_path)
+    store.save_snapshot(TODAY - timedelta(days=14), [snap("target/repo", 40)])
+    for offset in range(1, 8):
+        store.save_snapshot(TODAY - timedelta(days=offset), [snap(f"other/{offset}", offset)])
+
+    ranked = rank_and_store_repositories(store, TODAY, [snap("target/repo", 100)])
+
+    assert [(item.snapshot.repository, item.stars_gained, item.is_trial) for item in ranked] == [
+        ("target/repo", 60, True)
+    ]
+
+
 def test_priority_order_preserves_trending_search_and_history_before_metadata_cap() -> None:
     """Would catch alphabetic truncation that discards high-priority discovery signals after 100 names."""
     client = GitHubFixtureClient()
