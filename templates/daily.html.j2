@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <body style="margin:0;padding:0;background-color:#f4f4f4;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;background-color:#f4f4f4;">
+      <tr>
+        <td align="center" style="padding:20px 10px;">
+          <table role="presentation" width="720" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:100%;max-width: 720px;background-color:#ffffff;color:#1f2937;">
+            <tr><td style="padding:24px 28px 12px;"><h1 style="margin:0;font-size:24px;line-height:32px;color:#111827;">AI Daily · {{ digest.local_date }}</h1><p style="margin:8px 0 0;font-size:14px;line-height:20px;color:#4b5563;">AI 要闻 {{ digest.news|length }} 条 · GitHub 周榜 Top {{ digest.repositories|length }}</p></td></tr>
+            {% if digest.warnings %}
+            <tr><td style="padding:0 28px 8px;"><div style="padding:12px;background-color:#fff7ed;border:1px solid #fed7aa;color:#9a3412;font-size:14px;line-height:20px;"><strong>数据提示</strong><ul style="margin:6px 0 0;padding-left:20px;">{% for warning in digest.warnings %}<li>{{ warning }}</li>{% endfor %}</ul></div></td></tr>
+            {% endif %}
+            <tr><td style="padding:16px 28px 4px;"><h2 style="margin:0;font-size:20px;line-height:28px;color:#111827;">AI 要闻</h2></td></tr>
+            {% if digest.news %}
+              {% for cluster in digest.news %}
+              <tr><td style="padding:12px 28px;border-bottom:1px solid #e5e7eb;"><div style="font-size:12px;line-height:18px;color:#ffffff;background-color:{% if cluster.trust_grade == 'A' %}#15803d{% elif cluster.trust_grade == 'B' %}#b45309{% else %}#6b7280{% endif %};display:inline-block;padding:2px 7px;">可信度 {{ cluster.trust_grade }}</div><h3 style="margin:8px 0 4px;font-size:17px;line-height:24px;color:#111827;">{{ cluster.title }}</h3>{% if cluster.summary %}<p style="margin:6px 0;font-size:14px;line-height:21px;">{{ cluster.summary }}</p>{% endif %}{% if cluster.why_it_matters %}<p style="margin:6px 0;font-size:14px;line-height:21px;"><strong>为何重要：</strong>{{ cluster.why_it_matters }}</p>{% endif %}<p style="margin:6px 0;font-size:12px;line-height:18px;color:#6b7280;">数据时间：{{ cluster.items[0].published_at.isoformat() if cluster.items else '未知' }}</p><ul style="margin:6px 0 0;padding-left:20px;font-size:13px;line-height:20px;">{% for item in cluster.items %}{% set url = item.canonical_url|safe_url %}<li>{{ item.source_name }}：{% if url %}<a href="{{ url }}" style="color:#2563eb;text-decoration:underline;">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}</li>{% endfor %}</ul></td></tr>
+              {% endfor %}
+            {% else %}
+              <tr><td style="padding:12px 28px;font-size:14px;line-height:21px;">今日无重大 AI 官方动态</td></tr>
+            {% endif %}
+            <tr><td style="padding:20px 28px 4px;"><h2 style="margin:0;font-size:20px;line-height:28px;color:#111827;">GitHub 周榜</h2></td></tr>
+            {% if digest.repositories %}
+              {% for repo in digest.repositories %}
+              {% set repo_url = repo.snapshot.repository|github_url %}
+              <tr><td style="padding:12px 28px;border-bottom:1px solid #e5e7eb;"><h3 style="margin:0;font-size:17px;line-height:24px;color:#111827;">#{{ loop.index }} {% if repo_url %}<a href="{{ repo_url }}" style="color:#2563eb;text-decoration:underline;">{{ repo.snapshot.repository }}</a>{% else %}{{ repo.snapshot.repository }}{% endif %}{% if repo.is_trial %} <span style="color:#b45309;">（试行排名）</span>{% endif %}</h3><p style="margin:6px 0;font-size:14px;line-height:21px;">语言：{{ repo.snapshot.primary_language or '未标注' }} · Stars：{{ '{:,}'.format(repo.snapshot.stars) }} · 7 日新增：+{{ '{:,}'.format(repo.stars_gained) }}</p>{% if repo.snapshot.description %}<p style="margin:6px 0;font-size:14px;line-height:21px;">{{ repo.snapshot.description }}</p>{% endif %}{% if repo.explanation %}<p style="margin:6px 0;font-size:14px;line-height:21px;"><strong>推荐理由：</strong>{{ repo.explanation }}</p>{% endif %}<p style="margin:6px 0;font-size:12px;line-height:18px;color:#6b7280;">数据时间：{{ repo.snapshot.collected_at.isoformat() }}</p></td></tr>
+              {% endfor %}
+            {% else %}
+              <tr><td style="padding:12px 28px;font-size:14px;line-height:21px;">今日暂无可用 GitHub 排行数据</td></tr>
+            {% endif %}
+            {% if digest.usage %}
+            <tr><td style="padding:20px 28px 24px;"><h2 style="margin:0 0 8px;font-size:20px;line-height:28px;color:#111827;">AI 用量与成本</h2><p style="margin:6px 0;font-size:14px;line-height:21px;">Token：{% for usage in digest.usage %}{{ usage.stage }}（命中 {{ usage.input_cache_hit_tokens }} / 未命中 {{ usage.input_cache_miss_tokens }} / 输出 {{ usage.output_tokens }}）{% if not loop.last %}；{% endif %}{% endfor %}</p><p style="margin:6px 0;font-size:14px;line-height:21px;">本次成本：{{ cost.currency }} {{ cost.total }} · 30-day 预测：{{ cost.currency }} {{ cost.thirty_day_projection }}</p><ul style="margin:6px 0 0;padding-left:20px;font-size:13px;line-height:20px;">{% for stage, amount in cost.by_stage.items() %}<li>{{ stage }}：{{ cost.currency }} {{ amount }}</li>{% endfor %}</ul></td></tr>
+            {% endif %}
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

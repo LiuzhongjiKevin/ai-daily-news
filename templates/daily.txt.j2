@@ -1,0 +1,33 @@
+AI Daily · {{ digest.local_date }}
+AI 要闻 {{ digest.news|length }} 条 · GitHub 周榜 Top {{ digest.repositories|length }}
+
+{% if digest.warnings %}数据提示：
+{% for warning in digest.warnings %}- {{ warning }}
+{% endfor %}
+{% endif %}AI 要闻
+{% if digest.news %}{% for cluster in digest.news %}
+[{{ cluster.trust_grade }}] {{ cluster.title }}
+{% if cluster.summary %}摘要：{{ cluster.summary }}
+{% endif %}{% if cluster.why_it_matters %}为何重要：{{ cluster.why_it_matters }}
+{% endif %}数据时间：{{ cluster.items[0].published_at.isoformat() if cluster.items else '未知' }}
+{% for item in cluster.items %}{% set url = item.canonical_url|safe_url %}- {{ item.source_name }}：{{ item.title }}{% if url %}
+  {{ url }}{% endif %}
+{% endfor %}{% endfor %}{% else %}今日无重大 AI 官方动态
+{% endif %}
+GitHub
+{% if digest.repositories %}{% for repo in digest.repositories %}{% set url = repo.snapshot.repository|github_url %}
+#{{ loop.index }} {{ repo.snapshot.repository }}{% if repo.is_trial %}（试行排名）{% endif %}
+语言：{{ repo.snapshot.primary_language or '未标注' }} · Stars：{{ '{:,}'.format(repo.snapshot.stars) }} · 7 日新增：+{{ '{:,}'.format(repo.stars_gained) }}
+{% if repo.snapshot.description %}简介：{{ repo.snapshot.description }}
+{% endif %}{% if repo.explanation %}推荐理由：{{ repo.explanation }}
+{% endif %}数据时间：{{ repo.snapshot.collected_at.isoformat() }}{% if url %}
+{{ url }}{% endif %}
+{% endfor %}{% else %}今日暂无可用 GitHub 排行数据
+{% endif %}
+{% if digest.usage %}
+AI 用量与成本
+{% for usage in digest.usage %}- {{ usage.stage }} Token：命中 {{ usage.input_cache_hit_tokens }} / 未命中 {{ usage.input_cache_miss_tokens }} / 输出 {{ usage.output_tokens }}
+{% endfor %}本次成本：{{ cost.currency }} {{ cost.total }}
+30-day 预测：{{ cost.currency }} {{ cost.thirty_day_projection }}
+{% for stage, amount in cost.by_stage.items() %}- {{ stage }}：{{ cost.currency }} {{ amount }}
+{% endfor %}{% endif %}
