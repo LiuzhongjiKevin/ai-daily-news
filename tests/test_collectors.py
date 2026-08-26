@@ -125,6 +125,7 @@ def test_page_collector_uses_configured_selectors_and_resolves_relative_links(
         link_selector="a.read-more",
         date_selector="time",
         excerpt_selector="p.summary",
+        link_path_pattern=r"^/releases/",
     )
 
     items = PageCollector(http_client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
@@ -133,6 +134,24 @@ def test_page_collector_uses_configured_selectors_and_resolves_relative_links(
     assert str(items[0].canonical_url) == "https://example.test/releases/page-announcement"
     assert items[0].excerpt == "Details without markup."
     assert items[0].published_at == datetime(2026, 8, 24, 9, 0, tzinfo=UTC)
+
+
+def test_page_source_config_requires_a_link_path_contract() -> None:
+    """Would catch a broad page selector being configured without a source-specific URL boundary."""
+    with pytest.raises(ValueError, match="link_path_pattern"):
+        SourceConfig(
+            id="unbounded-page",
+            name="Unbounded page",
+            kind="page",
+            source_type="official",
+            url="https://example.test/news",
+            language="en",
+            category="company",
+            item_selector="article",
+            title_selector="h2",
+            link_selector="a",
+            date_selector="time",
+        )
 
 
 def test_page_collector_reports_a_selector_mismatch_instead_of_returning_empty(
@@ -152,6 +171,7 @@ def test_page_collector_reports_a_selector_mismatch_instead_of_returning_empty(
         link_selector="a.read-more",
         date_selector="time.missing",
         excerpt_selector="p.summary",
+        link_path_pattern=r"^/releases/",
     )
 
     with pytest.raises(PageParseError, match="matched 2 cards but parsed 0"):
@@ -174,6 +194,7 @@ def test_page_collector_reports_invalid_card_urls_as_a_source_shape_error(
         title_selector="h2",
         link_selector="a",
         date_selector="time",
+        link_path_pattern=r"^/releases/",
     )
     http_client.responses[str(source.url)] = (
         b"<article><h2>Bad card</h2><a href='mailto:news@example.test'>Read</a>"
@@ -181,6 +202,29 @@ def test_page_collector_reports_invalid_card_urls_as_a_source_shape_error(
     )
 
     with pytest.raises(PageParseError, match="matched 1 cards but parsed 0"):
+        PageCollector(http_client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
+
+
+def test_page_collector_rejects_incidental_cards_outside_the_source_news_path(
+    http_client: FixtureClient,
+) -> None:
+    """Would catch unrelated article cards being accepted merely because broad selectors match."""
+    source = SourceConfig(
+        id="newsroom",
+        name="Example Newsroom",
+        kind="page",
+        source_type="official",
+        url="https://example.test/news",
+        language="en",
+        category="company",
+        item_selector="article.story",
+        title_selector="h2",
+        link_selector="a.read-more",
+        date_selector="time",
+        link_path_pattern=r"^/official-news/",
+    )
+
+    with pytest.raises(PageParseError, match="matched 2 cards but parsed 0"):
         PageCollector(http_client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
 
 
@@ -301,6 +345,7 @@ def test_registry_adds_a_redacted_endpoint_to_page_parse_diagnostics(
         title_selector="h2",
         link_selector="a",
         date_selector="time",
+        link_path_pattern=r"^/news/",
     )
     http_client.responses[str(source.url)] = (FIXTURES / "news_page.html").read_bytes()
     registry = CollectorRegistry({"page": PageCollector(http_client)})
@@ -330,6 +375,7 @@ def test_format_source_failure_includes_a_redacted_configured_endpoint() -> None
         title_selector="h2",
         link_selector="a",
         date_selector="time",
+        link_path_pattern=r"^/news/",
     )
 
     diagnostic = format_source_failure(source, PageParseError("page returned zero valid cards"))
@@ -428,3 +474,5 @@ def test_configured_registry_covers_required_sources_with_unique_ids() -> None:
     assert expected_ids <= {source.id for source in sources}
     assert len({source.id for source in sources}) == len(sources)
     assert all(source.source_type and source.category for source in sources)
+    page_sources = [source for source in sources if source.kind == "page"]
+    assert all(source.link_path_pattern and source.link_path_pattern.startswith("^/") for source in page_sources)

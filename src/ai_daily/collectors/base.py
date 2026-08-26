@@ -6,7 +6,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 import yaml
 from dateutil import parser
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 from ai_daily.models import RawItem
 
@@ -37,7 +37,14 @@ class SourceConfig(BaseModel):
     link_selector: str | None = None
     date_selector: str | None = None
     excerpt_selector: str | None = None
+    link_path_pattern: str | None = None
     allowed_domains: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_page_contract(self) -> "SourceConfig":
+        if self.kind == "page" and not self.link_path_pattern:
+            raise ValueError("page sources require a link_path_pattern")
+        return self
 
 
 class Collector(Protocol):

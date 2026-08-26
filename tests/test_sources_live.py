@@ -4,14 +4,21 @@ from pathlib import Path
 import pytest
 
 from ai_daily.collectors import build_collector_registry, load_sources
-from ai_daily.collectors.base import PageParseError, SourceConfig, format_source_failure
+from ai_daily.collectors.base import (
+    PageParseError,
+    SourceConfig,
+    SourceParseError,
+    format_source_failure,
+)
 from ai_daily.http import RetryingClient
 
 
 def validate_collected_items(source: SourceConfig, items: list[object]) -> None:
-    """An empty page is not a successful validation: it lacks a parseable source card."""
+    """Only a syntactically valid feed may be empty during live source validation."""
     if source.kind == "page" and not items:
         raise PageParseError("page returned zero valid cards")
+    if source.kind in {"discovery", "github_releases"} and not items:
+        raise SourceParseError(f"{source.kind} returned zero valid items")
 
 
 def test_live_validation_rejects_an_empty_page_result() -> None:
@@ -28,9 +35,30 @@ def test_live_validation_rejects_an_empty_page_result() -> None:
         title_selector="h2",
         link_selector="a",
         date_selector="time",
+        link_path_pattern=r"^/news/",
     )
 
     with pytest.raises(PageParseError, match="zero valid cards"):
+        validate_collected_items(source, [])
+
+
+@pytest.mark.parametrize("kind", ["discovery", "github_releases"])
+def test_live_validation_rejects_empty_non_feed_results(kind: str) -> None:
+    """Would catch an empty discovery or releases response being counted as validated."""
+    source = SourceConfig(
+        id=f"empty-{kind}",
+        name="Empty source",
+        kind=kind,
+        source_type="discovery" if kind == "discovery" else "release",
+        url="https://api.gdeltproject.org/api/v2/doc/doc"
+        if kind == "discovery"
+        else "https://api.github.com/repos/acme/widget/releases",
+        language="en",
+        category="company",
+        allowed_domains=["example.test"] if kind == "discovery" else [],
+    )
+
+    with pytest.raises(SourceParseError, match="zero valid items"):
         validate_collected_items(source, [])
 
 

@@ -1,5 +1,6 @@
+import re
 from datetime import datetime
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup, Tag
 from pydantic import ValidationError
@@ -27,6 +28,12 @@ class PageCollector:
         )
         if any(selector is None for selector in selectors):
             raise ValueError("page sources require item, title, link, and date selectors")
+        if not source.link_path_pattern:
+            raise ValueError("page sources require a link_path_pattern")
+        try:
+            link_path_pattern = re.compile(source.link_path_pattern)
+        except re.error as exc:
+            raise ValueError("page source link_path_pattern is invalid") from exc
         response = self.client.get(str(source.url))
         document = BeautifulSoup(response.content, "html.parser")
         cutoff = require_since_aware(since)
@@ -35,7 +42,7 @@ class PageCollector:
             raise PageParseError(f"page selector mismatch: {source.item_selector!r} matched 0 cards")
         parsed_cards: list[RawItem] = []
         for item in cards:
-            parsed = self._parse_item(item, source)
+            parsed = self._parse_item(item, source, link_path_pattern)
             if parsed is not None:
                 parsed_cards.append(parsed)
         if not parsed_cards:
@@ -44,7 +51,7 @@ class PageCollector:
         return rows
 
     @staticmethod
-    def _parse_item(item: Tag, source: SourceConfig) -> RawItem | None:
+    def _parse_item(item: Tag, source: SourceConfig, link_path_pattern: re.Pattern[str]) -> RawItem | None:
         assert source.title_selector and source.link_selector and source.date_selector
         title_node = item.select_one(source.title_selector)
         link_node = item.select_one(source.link_selector)
@@ -54,6 +61,9 @@ class PageCollector:
         href = link_node.get("href")
         timestamp = date_node.get("datetime") or date_node.get_text(" ", strip=True)
         if not href or not timestamp:
+            return None
+        canonical_url = urljoin(str(source.url), href)
+        if not link_path_pattern.search(urlparse(canonical_url).path):
             return None
         try:
             published = parse_datetime(timestamp)
@@ -74,7 +84,7 @@ class PageCollector:
                 source_type=source.source_type,
                 title=title,
                 published_at=published,
-                canonical_url=urljoin(str(source.url), href),
+                canonical_url=canonical_url,
                 excerpt=excerpt,
                 language=source.language,
                 category=source.category,
