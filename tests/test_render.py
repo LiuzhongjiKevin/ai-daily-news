@@ -135,6 +135,61 @@ def test_escapes_content_and_refuses_unsafe_links(templates_dir: Path) -> None:
     assert "javascript:alert" not in rendered.markdown
 
 
+def test_preserves_text_and_markdown_record_boundaries(templates_dir: Path) -> None:
+    """Would catch Jinja whitespace controls joining sources, URLs, records, or headings."""
+    digest = _digest()
+    second_snapshot = digest.repositories[0].snapshot.model_copy(
+        update={"repository": "other/project", "stars": 9_876}
+    )
+    digest.repositories.append(RankedRepo(snapshot=second_snapshot, stars_gained=321, is_trial=False))
+
+    rendered = render_digest(digest, _cost([]), templates_dir)
+
+    text_lines = rendered.text.splitlines()
+    assert text_lines[text_lines.index("- OpenAI：官方公告") + 1] == "  https://example.com/official"
+    assert text_lines[text_lines.index("- Research Lab：Supporting report") + 1] == (
+        "  https://example.net/report"
+    )
+    assert "https://github.com/owner/repo" in text_lines
+    assert next(
+        line for line in text_lines[text_lines.index("https://github.com/owner/repo") + 1 :] if line
+    ) == "#2 other/project"
+
+    markdown_lines = rendered.markdown.splitlines()
+    assert "## GitHub" in markdown_lines
+    assert "### [A] 可信要闻" in markdown_lines
+    assert "### [B] B 级要闻" in markdown_lines
+    assert "- OpenAI：官方公告 — https://example.com/official" in markdown_lines
+    assert "- Research Lab：Supporting report — https://example.net/report" in markdown_lines
+    assert "https://github.com/owner/repo" in markdown_lines
+    assert next(
+        line for line in markdown_lines[markdown_lines.index("https://github.com/owner/repo") + 1 :] if line
+    ) == "### #2 other/project"
+
+
+def test_percent_encodes_untrusted_http_urls_before_rendering(templates_dir: Path) -> None:
+    """Would catch HTTP(S) URL text breaking HTML attributes or Markdown parsing."""
+    digest = _digest()
+    unsafe_url = 'https://example.com/<img src=x onerror=1>?q="quote"&value=(value)'
+    attribute_payload = 'https://example.net/" onmouseover="alert(1)'
+    object.__setattr__(digest.news[0].items[0], "canonical_url", unsafe_url)
+    object.__setattr__(digest.news[0].items[1], "canonical_url", attribute_payload)
+
+    rendered = render_digest(digest, _cost([]), templates_dir)
+
+    sanitized_url = "https://example.com/%3Cimg%20src=x%20onerror=1%3E?q=%22quote%22&value=%28value%29"
+    sanitized_attribute_payload = "https://example.net/%22%20onmouseover=%22alert%281%29"
+    for output in (rendered.text, rendered.markdown):
+        assert sanitized_url in output
+        assert sanitized_attribute_payload in output
+        assert unsafe_url not in output
+        assert attribute_payload not in output
+        assert "<img src=x" not in output
+    assert 'href="https://example.com/%3Cimg%20src=x%20onerror=1%3E?q=%22quote%22&amp;value=%28value%29"' in rendered.html
+    assert 'href="https://example.net/%22%20onmouseover=%22alert%281%29"' in rendered.html
+    assert "<img src=x" not in rendered.html
+
+
 def test_renders_empty_sections_and_omits_ai_cost_without_usage(templates_dir: Path) -> None:
     """Would catch an empty or off-mode digest emitting misleading section or cost content."""
     digest = Digest(local_date="2026-08-24", news=[], repositories=[], warnings=["No repository data"])

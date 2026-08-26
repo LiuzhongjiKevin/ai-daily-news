@@ -3,7 +3,7 @@
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
@@ -28,7 +28,7 @@ def _safe_url(value: object) -> str | None:
     parsed = urlsplit(url)
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         return None
-    return url
+    return quote(url, safe=":/?#@!$&*+,;=%-._~")
 
 
 def _github_url(repository: object) -> str | None:
@@ -48,8 +48,8 @@ def _environment(templates_dir: Path, *, autoescape: bool) -> Environment:
         loader=FileSystemLoader(templates_dir),
         autoescape=autoescape,
         undefined=StrictUndefined,
-        trim_blocks=True,
-        lstrip_blocks=True,
+        trim_blocks=False,
+        lstrip_blocks=False,
     )
     environment.filters["safe_url"] = _safe_url
     environment.filters["github_url"] = _github_url
