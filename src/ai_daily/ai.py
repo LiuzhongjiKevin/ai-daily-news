@@ -63,6 +63,17 @@ def _usage_record(stage: str, model: str, response: object) -> UsageRecord:
     )
 
 
+def _aggregate_usage(records: list[UsageRecord]) -> UsageRecord:
+    first = records[0]
+    return UsageRecord(
+        stage=first.stage,
+        model=first.model,
+        input_cache_hit_tokens=sum(record.input_cache_hit_tokens for record in records),
+        input_cache_miss_tokens=sum(record.input_cache_miss_tokens for record in records),
+        output_tokens=sum(record.output_tokens for record in records),
+    )
+
+
 class OffEnricher:
     """Preserves a digest without using a configured AI client."""
 
@@ -131,6 +142,22 @@ class AIEnricher:
             "news", prompt, lambda parsed: self._validate_news(parsed, news)
         )
         selected_ids, items = self._validate_news_response(response)
+        summaries = {item["cluster_id"]: item for item in items}
+        if mode == "economy":
+            return (
+                [
+                    cluster.model_copy(
+                        update={
+                            "summary": summaries[cluster.cluster_id]["summary"],
+                            "why_it_matters": summaries[cluster.cluster_id]["why_it_matters"],
+                        }
+                    )
+                    if cluster.cluster_id in summaries
+                    else cluster
+                    for cluster in news
+                ],
+                usage,
+            )
         by_id = {cluster.cluster_id: cluster for cluster in news}
         return (
             [
@@ -184,7 +211,9 @@ class AIEnricher:
             {"role": "user", "content": prompt},
         ]
         last_error = "invalid response"
+        usage_records: list[UsageRecord] = []
         for attempt in range(2):
+            request_error: AIEnrichmentError | None = None
             try:
                 response = self.client.chat.completions.create(
                     model=self.settings.ai_model,
@@ -192,8 +221,12 @@ class AIEnricher:
                     response_format={"type": "json_object"},
                     max_tokens=self.settings.ai_max_output_tokens,
                 )
-            except Exception as error:
-                raise AIEnrichmentError("AI enrichment request failed") from error
+            except Exception as error:  # noqa: BLE001 - client implementations expose no shared error base.
+                request_error = AIEnrichmentError("AI enrichment request failed")
+                del error
+            if request_error is not None:
+                raise request_error
+            usage_records.append(_usage_record(stage, self.settings.ai_model, response))
             try:
                 parsed = json.loads(_response_content(response))
                 if not isinstance(parsed, dict):
@@ -210,7 +243,7 @@ class AIEnricher:
                     )
                     continue
                 raise AIEnrichmentError(last_error) from error
-            return parsed, _usage_record(stage, self.settings.ai_model, response)
+            return parsed, _aggregate_usage(usage_records)
         raise AIEnrichmentError(last_error)
 
     @staticmethod

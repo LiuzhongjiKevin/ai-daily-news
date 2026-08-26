@@ -1,3 +1,4 @@
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -151,6 +152,33 @@ def test_empty_sections_are_not_sent_to_the_model() -> None:
     assert [record.stage for record in usage] == ["github"]
 
 
+def test_economy_mode_preserves_rule_selected_news_order_when_ai_returns_subset() -> None:
+    """Would catch economy mode dropping rule-selected news based on an AI selection response."""
+    first = news_cluster("cluster-one")
+    second = news_cluster("cluster-two")
+    second.summary = "Preserve this summary"
+    second.why_it_matters = "Preserve this rationale"
+    client = FixtureClient([chat_response(fixture_response("ai_news_response.json"))])
+
+    news, _, _ = AIEnricher(client, settings()).enrich([first, second], [], mode="economy")
+
+    assert [cluster.cluster_id for cluster in news] == ["cluster-one", "cluster-two"]
+    assert news[0].summary == "A concise model-launch summary."
+    assert news[1].summary == "Preserve this summary"
+    assert news[1].why_it_matters == "Preserve this rationale"
+
+
+def test_full_mode_explicitly_uses_ai_news_selection() -> None:
+    """Would catch full mode preserving all candidates after AI selects the final subset."""
+    client = FixtureClient([chat_response(fixture_response("ai_news_response.json"))])
+
+    news, _, _ = AIEnricher(client, settings()).enrich(
+        [news_cluster("cluster-one"), news_cluster("cluster-two")], [], mode="full"
+    )
+
+    assert [cluster.cluster_id for cluster in news] == ["cluster-one"]
+
+
 def test_prompts_bound_excerpts_descriptions_output_and_exclude_urls() -> None:
     """Would catch source URLs or unbounded article text reaching the external model."""
     long_excerpt = "n" * 801
@@ -200,6 +228,42 @@ def test_retries_once_after_malformed_json_with_compact_validation_error() -> No
     assert [record.stage for record in usage] == ["news"]
 
 
+def test_successful_repair_retry_aggregates_usage_from_both_provider_schemas() -> None:
+    """Would catch the paid invalid attempt being omitted from the final stage usage record."""
+    client = FixtureClient(
+        [
+            chat_response(
+                "not-json",
+                usage={
+                    "prompt_cache_hit_tokens": 2,
+                    "prompt_cache_miss_tokens": 3,
+                    "completion_tokens": 5,
+                },
+            ),
+            {
+                "output_text": fixture_response("ai_news_response.json"),
+                "usage": {
+                    "input_tokens": 13,
+                    "input_tokens_details": {"cached_tokens": 7},
+                    "output_tokens": 11,
+                },
+            },
+        ]
+    )
+
+    _, _, usage = AIEnricher(client, settings()).enrich([news_cluster()], [], mode="full")
+
+    assert [record.model_dump() for record in usage] == [
+        {
+            "stage": "news",
+            "model": "deepseek-v4-flash",
+            "input_cache_hit_tokens": 9,
+            "input_cache_miss_tokens": 9,
+            "output_tokens": 16,
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     ("invalid_payload", "match"),
     [
@@ -238,6 +302,19 @@ def test_wraps_api_failures_without_exposing_provider_message() -> None:
 
     assert "sk-secret" not in str(error.value)
     assert len(client.calls) == 1
+
+
+def test_api_failure_does_not_retain_secret_in_exception_chain_or_traceback() -> None:
+    """Would catch provider secrets surviving in the wrapped exception context or traceback."""
+    client = FixtureClient([RuntimeError("provider rejected sk-secret")])
+
+    with pytest.raises(AIEnrichmentError) as error:
+        AIEnricher(client, settings()).enrich([news_cluster()], [], mode="full")
+
+    rendered = "".join(traceback.format_exception(error.value))
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert "sk-secret" not in rendered
 
 
 def test_maps_responses_style_usage_fields() -> None:
