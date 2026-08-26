@@ -76,13 +76,35 @@ def _within_cluster_window(first: RawItem, second: RawItem) -> bool:
     return abs((_utc(first.published_at) - _utc(second.published_at)).total_seconds()) <= 72 * 3600
 
 
+def _items_fit_fuzzy_window(items: list[RawItem]) -> bool:
+    published_at = [_utc(item.published_at) for item in items]
+    return (max(published_at) - min(published_at)).total_seconds() <= 72 * 3600
+
+
+def _fuzzy_match(first: RawItem, second: RawItem) -> bool:
+    return (
+        first.category == second.category
+        and _within_cluster_window(first, second)
+        and token_set_ratio(normalize_text(first.title), normalize_text(second.title)) >= 82
+    )
+
+
+def _groups_fuzzy_match(first: list[RawItem], second: list[RawItem]) -> bool:
+    return any(_fuzzy_match(first_item, second_item) for first_item in first for second_item in second)
+
+
 def _cluster_id(items: list[RawItem]) -> str:
     identities = sorted(f"{canonicalize_url(str(item.canonical_url))}\n{fingerprint(item)}" for item in items)
     return hashlib.sha256("\n".join(identities).encode("utf-8")).hexdigest()
 
 
 def cluster_items(items: list[RawItem]) -> list[list[RawItem]]:
-    """Group exact duplicates first, then same-category, recent fuzzy title matches."""
+    """Group exact duplicates first, then form bounded fuzzy event clusters.
+
+    Exact URL/fingerprint groups are retained regardless of their internal publication span.
+    Fuzzy merging only joins those exact groups when the resulting component spans no more
+    than 72 hours, so linked pairs cannot chain separate recurring events together.
+    """
     parents = list(range(len(items)))
 
     def find(index: int) -> int:
@@ -103,20 +125,38 @@ def cluster_items(items: list[RawItem]) -> list[list[RawItem]]:
             if canonical_urls[first] == canonical_urls[second] or fingerprints[first] == fingerprints[second]:
                 union(first, second)
 
-    for first, item in enumerate(items):
-        for second in range(first):
-            fuzzy_match = (
-                item.category == items[second].category
-                and _within_cluster_window(item, items[second])
-                and token_set_ratio(normalize_text(item.title), normalize_text(items[second].title)) >= 82
-            )
-            if fuzzy_match:
-                union(first, second)
-
     grouped: dict[int, list[RawItem]] = {}
     for index, item in enumerate(items):
         grouped.setdefault(find(index), []).append(item)
-    return [sorted(group, key=_item_sort_key) for group in grouped.values()]
+    exact_groups = [sorted(group, key=_item_sort_key) for group in grouped.values()]
+    exact_groups.sort(key=lambda group: (min(_utc(item.published_at) for item in group), _cluster_id(group)))
+
+    fuzzy_parents = list(range(len(exact_groups)))
+    fuzzy_members = [list(group) for group in exact_groups]
+
+    def find_fuzzy(index: int) -> int:
+        while fuzzy_parents[index] != index:
+            fuzzy_parents[index] = fuzzy_parents[fuzzy_parents[index]]
+            index = fuzzy_parents[index]
+        return index
+
+    for first in range(len(exact_groups)):
+        for second in range(first + 1, len(exact_groups)):
+            first_root, second_root = find_fuzzy(first), find_fuzzy(second)
+            if first_root == second_root:
+                continue
+            combined = fuzzy_members[first_root] + fuzzy_members[second_root]
+            if _groups_fuzzy_match(fuzzy_members[first_root], fuzzy_members[second_root]) and _items_fit_fuzzy_window(
+                combined
+            ):
+                fuzzy_parents[second_root] = first_root
+                fuzzy_members[first_root] = sorted(combined, key=_item_sort_key)
+
+    return [
+        fuzzy_members[index]
+        for index in range(len(fuzzy_members))
+        if find_fuzzy(index) == index
+    ]
 
 
 def grade_cluster(items: list[RawItem]) -> Literal["A", "B", "C"]:

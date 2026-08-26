@@ -146,6 +146,75 @@ def test_similar_headlines_exactly_72_hours_apart_cluster() -> None:
     assert len(clusters) == 1
 
 
+def test_fuzzy_cluster_chain_never_spans_more_than_72_hours() -> None:
+    """Would catch 0/71/142-hour fuzzy links being transitively merged into one event."""
+    rows = [
+        item(
+            "recent",
+            "media",
+            "OpenAI releases GPT-5",
+            "https://recent.test/gpt-5",
+            excerpt="Recent report.",
+        ),
+        item(
+            "middle",
+            "media",
+            "OpenAI releases GPT-5",
+            "https://middle.test/gpt-5",
+            published_at=NOW - timedelta(hours=71),
+            excerpt="Middle report.",
+        ),
+        item(
+            "old",
+            "media",
+            "OpenAI releases GPT-5",
+            "https://old.test/gpt-5",
+            published_at=NOW - timedelta(hours=142),
+            excerpt="Old report.",
+        ),
+    ]
+
+    clusters = prepare_news(rows)
+
+    assert {frozenset(member.source_id for member in cluster.items) for cluster in clusters} == {
+        frozenset({"recent"}),
+        frozenset({"middle", "old"}),
+    }
+    assert all(
+        max(member.published_at for member in cluster.items)
+        - min(member.published_at for member in cluster.items)
+        <= timedelta(hours=72)
+        for cluster in clusters
+    )
+
+
+def test_exact_canonical_url_matches_even_when_their_dates_exceed_fuzzy_window() -> None:
+    """Would catch exact source duplicates being weakened by the fuzzy-event time constraint."""
+    clusters = prepare_news(
+        [
+            item(
+                "recent",
+                "media",
+                "OpenAI release roundup",
+                "https://example.test/gpt-5?utm_source=mail",
+                excerpt="A recent source copy.",
+            ),
+            item(
+                "old",
+                "media",
+                "Earlier reporting on the release",
+                "https://EXAMPLE.test/gpt-5?ref=archive",
+                published_at=NOW - timedelta(hours=142),
+                excerpt="An older source copy.",
+                category="research",
+            ),
+        ]
+    )
+
+    assert len(clusters) == 1
+    assert {member.source_id for member in clusters[0].items} == {"recent", "old"}
+
+
 def test_sub_threshold_titles_remain_separate() -> None:
     """Would catch unrelated same-category headlines being over-clustered."""
     clusters = prepare_news(
