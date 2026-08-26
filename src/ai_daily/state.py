@@ -39,6 +39,29 @@ class StateStore:
             return []
         return TypeAdapter(list[RepoSnapshot]).validate_json(path.read_text("utf-8"))
 
+    def recent_snapshot_days(
+        self,
+        today: date,
+        *,
+        limit: int = 7,
+        retention_days: int = 35,
+    ) -> list[date]:
+        """Return up to ``limit`` prior snapshot dates, newest first, within retention."""
+        if limit < 1 or retention_days < 1:
+            raise ValueError("snapshot limits must be positive")
+        if not self.snapshot_dir.exists():
+            return []
+        cutoff = today - timedelta(days=retention_days)
+        dates: list[date] = []
+        for path in self.snapshot_dir.glob("????-??-??.json"):
+            try:
+                day = date.fromisoformat(path.stem)
+            except ValueError:
+                continue
+            if cutoff <= day < today:
+                dates.append(day)
+        return sorted(dates, reverse=True)[:limit]
+
     def prune_snapshots(self, today: date, retention_days: int) -> list[Path]:
         cutoff = today - timedelta(days=retention_days)
         removed = []

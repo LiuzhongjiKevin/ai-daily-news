@@ -7,6 +7,7 @@ import pytest
 
 from ai_daily.collectors.github import discover_candidates, fetch_repo_snapshots
 from ai_daily.github_rank import (
+    historical_candidate_names,
     load_recent_snapshots,
     rank_and_store_repositories,
     rank_repositories,
@@ -76,7 +77,7 @@ def test_discovery_unions_trending_search_and_history_case_insensitively() -> No
         historical_names=["OTHER/TOOL", "saved/repo"],
     )
 
-    assert names == ["Acme/Widget", "new/project", "other/tool", "saved/repo"]
+    assert names == ["Acme/Widget", "other/tool", "saved/repo", "new/project"]
     assert [url for url, _ in client.requests].count("https://github.com/trending?since=daily") == 1
     assert [url for url, _ in client.requests].count("https://github.com/trending?since=weekly") == 1
     search_calls = [request for request in client.requests if "search/repositories" in request[0]]
@@ -186,6 +187,51 @@ def test_recent_snapshots_loads_exact_baseline_or_oldest_first_week_snapshot(tmp
     baseline, has_full_baseline, _ = load_recent_snapshots(store, TODAY)
     assert baseline == [snap("owner/repo", 10)]
     assert has_full_baseline is True
+
+
+def test_historical_candidates_keep_seven_most_recent_saved_snapshot_dates(tmp_path: Path) -> None:
+    """Would catch missed runs dropping snapshots merely because their dates are older than a week."""
+    store = StateStore(tmp_path)
+    for offset in range(8, 15):
+        store.save_snapshot(TODAY - timedelta(days=offset), [snap(f"retained/{offset}", offset)])
+
+    assert historical_candidate_names(store, TODAY) == [
+        f"retained/{offset}" for offset in range(14, 7, -1)
+    ]
+
+
+def test_ranking_uses_each_repositories_oldest_fallback_when_exact_file_lacks_it(
+    tmp_path: Path,
+) -> None:
+    """Would catch a global exact-baseline file masking a repository's own first-week record."""
+    store = StateStore(tmp_path)
+    store.save_snapshot(TODAY - timedelta(days=7), [snap("other/repo", 10)])
+    store.save_snapshot(TODAY - timedelta(days=6), [snap("target/repo", 60)])
+
+    ranked = rank_and_store_repositories(store, TODAY, [snap("target/repo", 100)])
+
+    assert [(item.snapshot.repository, item.stars_gained, item.is_trial) for item in ranked] == [
+        ("target/repo", 40, True)
+    ]
+
+
+def test_priority_order_preserves_trending_search_and_history_before_metadata_cap() -> None:
+    """Would catch alphabetic truncation that discards high-priority discovery signals after 100 names."""
+    client = GitHubFixtureClient()
+    client.trending = (
+        b'<article class="Box-row"><h2><a href="/zz/trending">trending</a></h2></article>'
+    )
+    client.search = json.dumps(
+        {"items": [{"full_name": "zz/search"}, *({"full_name": f"aa/{number:03}"} for number in range(101))]}
+    ).encode()
+
+    names = discover_candidates(client, "token", TODAY, historical_names=["zz/history"])
+    fetch_repo_snapshots(client, "token", names, NOW, max_repositories=3)
+
+    metadata_names = [request[0].rsplit("/repos/", 1)[1] for request in client.requests if "/repos/" in request[0]]
+    assert names[:3] == ["zz/trending", "zz/history", "zz/search"]
+    assert "zz/history" in names
+    assert metadata_names == ["zz/trending", "zz/history", "zz/search"]
 
 
 def test_rank_and_store_saves_then_prunes_only_after_successful_ranking(tmp_path: Path, monkeypatch) -> None:

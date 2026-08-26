@@ -46,7 +46,12 @@ def discover_candidates(
     today: date,
     historical_names: Iterable[str] = (),
 ) -> list[str]:
-    """Collect a bounded, deterministic union of Trending, Search, and historical repositories."""
+    """Collect candidates in priority order: Trending, retained history, then Search star order.
+
+    The returned order is used by the 100-request metadata cap: daily Trending leads weekly
+    Trending, then names retained from snapshots, then the created and pushed Search results in
+    their API star order. Case-insensitive duplicates retain their earliest, highest-priority form.
+    """
     names: dict[str, str] = {}
 
     def add(values: Iterable[str]) -> None:
@@ -57,6 +62,7 @@ def discover_candidates(
 
     add(parse_trending(client.get("https://github.com/trending?since=daily").text))
     add(parse_trending(client.get("https://github.com/trending?since=weekly").text))
+    add(historical_names)
     queries = (
         f"created:>={today - timedelta(days=14)}",
         f"pushed:>={today - timedelta(days=7)} stars:>=100",
@@ -74,8 +80,7 @@ def discover_candidates(
             if not isinstance(item, dict) or not isinstance(item.get("full_name"), str):
                 raise TypeError("GitHub repository search item has no full_name")
             add([item["full_name"]])
-    add(historical_names)
-    return [names[key] for key in sorted(names)]
+    return list(names.values())
 
 
 def fetch_repo_snapshots(
@@ -86,11 +91,15 @@ def fetch_repo_snapshots(
     *,
     max_repositories: int = MAX_CANDIDATE_REPOSITORIES,
 ) -> list[RepoSnapshot]:
-    """Fetch repository metadata through a capped number of GitHub API requests."""
+    """Fetch metadata in candidate priority order through at most 100 GitHub API requests."""
     if max_repositories < 1:
         raise ValueError("max_repositories must be positive")
-    unique = {name.casefold(): name.strip() for name in names if name.strip() and "/" in name}
-    selected = [unique[key] for key in sorted(unique)][:max_repositories]
+    unique: dict[str, str] = {}
+    for name in names:
+        normalized = name.strip()
+        if normalized and "/" in normalized:
+            unique.setdefault(normalized.casefold(), normalized)
+    selected = list(unique.values())[: min(max_repositories, MAX_CANDIDATE_REPOSITORIES)]
     snapshots: list[RepoSnapshot] = []
     for start in range(0, len(selected), METADATA_BATCH_SIZE):
         for name in selected[start : start + METADATA_BATCH_SIZE]:
