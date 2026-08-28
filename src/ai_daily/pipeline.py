@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import UTC, date, datetime, tzinfo
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal, Protocol
@@ -167,6 +167,8 @@ class DailyPipeline:
             has_full_baseline=has_full_baseline,
             fallback=fallback,
         )
+        if not ranked:
+            raise GitHubCollectionError("GitHub ranking is unavailable")
         self.state_store.save_snapshot(day, current)
         return ranked
 
@@ -273,7 +275,18 @@ class DailyPipeline:
             except (OSError, ValueError):
                 continue
             if snapshots:
-                return rank_repositories(snapshots, [], self.settings.github_top_n), snapshot_day
+                baseline = self.state_store.load_snapshot(
+                    snapshot_day - timedelta(days=self.settings.github_window_days)
+                )
+                ranked = rank_repositories(
+                    snapshots,
+                    baseline,
+                    self.settings.github_top_n,
+                    has_full_baseline=bool(baseline),
+                    fallback=self._retained_snapshots(snapshot_day),
+                )
+                if ranked:
+                    return ranked, snapshot_day
         return [], None
 
     @staticmethod

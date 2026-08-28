@@ -315,6 +315,78 @@ def test_github_transport_failure_uses_newest_cached_snapshot_and_exposes_date(t
     assert "2026-08-23" in result.markdown_path.read_text("utf-8")
 
 
+def test_empty_current_github_ranking_uses_older_cache_even_without_news(tmp_path: Path) -> None:
+    """Would catch an empty successful GitHub fetch hiding the last usable repository snapshot."""
+    from ai_daily.pipeline import RunOptions
+
+    store = StateStore(tmp_path / "data")
+    cached_day = date(2026, 8, 23)
+    store.save_snapshot(cached_day, [snapshot()])
+
+    result = make_pipeline(
+        tmp_path,
+        registry=FixedRegistry([], ["all news sources unavailable"]),
+        store=store,
+        fetch=lambda *_: [],
+    ).run(RunOptions())
+
+    assert result.warnings == [
+        "all news sources unavailable",
+        "GitHub data unavailable; using cached snapshot from 2026-08-23",
+    ]
+    assert result.markdown_path and "owner/repo" in result.markdown_path.read_text("utf-8")
+    assert not (store.snapshot_dir / "2026-08-24.json").exists()
+
+
+def test_empty_current_github_ranking_prefers_cache_alongside_valid_news(tmp_path: Path) -> None:
+    """Would catch a valid news section causing an empty GitHub result to bypass usable cache."""
+    from ai_daily.pipeline import RunOptions
+
+    store = StateStore(tmp_path / "data")
+    store.save_snapshot(date(2026, 8, 23), [snapshot()])
+
+    result = make_pipeline(tmp_path, store=store, fetch=lambda *_: []).run(RunOptions())
+
+    assert result.warnings == ["GitHub data unavailable; using cached snapshot from 2026-08-23"]
+    assert result.markdown_path and "owner/repo" in result.markdown_path.read_text("utf-8")
+
+
+def test_cached_snapshot_keeps_rolling_gain_order_and_trial_baselines(tmp_path: Path) -> None:
+    """Would catch cached fallback zeroing gains and sorting by total stars instead of seven-day growth."""
+    from ai_daily.pipeline import RunOptions
+
+    store = StateStore(tmp_path / "data")
+    cached_day = date(2026, 8, 23)
+    high = snapshot().model_copy(update={"repository": "high/total", "stars": 1_000})
+    low = snapshot().model_copy(update={"repository": "low/growth", "stars": 200})
+    trial = snapshot().model_copy(update={"repository": "trial/repo", "stars": 50})
+    store.save_snapshot(cached_day, [high, low, trial])
+    store.save_snapshot(
+        cached_day - timedelta(days=7),
+        [
+            high.model_copy(update={"stars": 999}),
+            low.model_copy(update={"stars": 100}),
+        ],
+    )
+    store.save_snapshot(cached_day - timedelta(days=5), [trial.model_copy(update={"stars": 10})])
+
+    def unavailable(*_: object) -> list[str]:
+        raise httpx.ConnectError("offline")
+
+    result = make_pipeline(
+        tmp_path,
+        registry=FixedRegistry([]),
+        store=store,
+        discover=unavailable,
+    ).run(RunOptions())
+
+    archive = result.markdown_path.read_text("utf-8") if result.markdown_path else ""
+    assert archive.index("### #1 low/growth") < archive.index("### #3 high/total")
+    assert "### #1 low/growth\n\n语言：未标注 · Stars：200 · 7 日新增：+100" in archive
+    assert "### #2 trial/repo（试行排名）\n\n语言：未标注 · Stars：50 · 7 日新增：+40" in archive
+    assert "### #3 high/total\n\n语言：未标注 · Stars：1,000 · 7 日新增：+1" in archive
+
+
 def test_github_failure_without_cache_keeps_valid_news_and_warns(tmp_path: Path) -> None:
     """Would catch an unavailable optional repository section blocking a valid news digest."""
     from ai_daily.pipeline import RunOptions
