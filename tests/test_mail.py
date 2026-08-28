@@ -216,6 +216,36 @@ def test_cached_token_sanitizes_msal_exceptions(tmp_path: Path) -> None:
     assert TOKEN not in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "AI Daily with no local date",
+        "[AI Daily] 2026-13-40 invalid local date",
+        "AI Daily\r\nBcc: attacker@example.test",
+    ],
+)
+@respx.mock
+def test_graph_mailer_validates_fingerprint_before_auth_or_mime_or_http(
+    tmp_path: Path, rendered: RenderedDigest, subject: str, monkeypatch
+) -> None:
+    path = tmp_path / "cache.enc"
+    key = EncryptedTokenCache.generate_key()
+    _saved_cache(path, key)
+    route = respx.post("https://graph.microsoft.com/v1.0/me/sendMail").respond(202)
+    invalid = RenderedDigest(subject=subject, text=rendered.text, html=rendered.html, markdown=rendered.markdown)
+    monkeypatch.setattr(
+        GraphMailer,
+        "_mime_message",
+        lambda *_: pytest.fail("MIME must not be built for invalid fingerprint input"),
+    )
+
+    with pytest.raises(MailSendError):
+        _mailer(path, key).send(invalid)
+
+    assert FakeApplication.created == []
+    assert route.called is False
+
+
 @respx.mock
 def test_graph_mailer_posts_base64_multipart_alternatives_and_returns_fingerprint(
     tmp_path: Path, rendered: RenderedDigest
@@ -329,3 +359,66 @@ def test_setup_refuses_existing_cache_without_replace_and_only_prints_device_cod
     assert "ABCD-EFGH" in output
     assert TOKEN not in output
     assert b"access-token" not in path.read_bytes()
+
+
+@pytest.mark.parametrize("stage", ["construct", "initiate", "acquire"])
+def test_setup_sanitizes_provider_failure_from_every_device_flow_stage(
+    tmp_path: Path, monkeypatch, capsys, stage: str
+) -> None:
+    from scripts import setup_outlook
+
+    sentinel = f"provider-secret-{stage}"
+
+    class FailingDeviceApplication:
+        def __init__(self, *_: object, **__: object) -> None:
+            if stage == "construct":
+                raise RuntimeError(sentinel)
+
+        def initiate_device_flow(self, *, scopes: list[str]) -> dict[str, str]:
+            if stage == "initiate":
+                raise RuntimeError(sentinel)
+            return {"verification_uri": "https://microsoft.example/verify", "user_code": "ABCD-EFGH"}
+
+        def acquire_token_by_device_flow(self, flow: dict[str, str]) -> dict[str, str]:
+            if stage == "acquire":
+                raise RuntimeError(sentinel)
+            return {"access_token": TOKEN}
+
+    key = EncryptedTokenCache.generate_key().decode()
+    monkeypatch.setenv("MS_CLIENT_ID", "client-id")
+    monkeypatch.setenv("MS_TOKEN_KEY", key)
+    monkeypatch.setattr(setup_outlook.msal, "PublicClientApplication", FailingDeviceApplication)
+
+    assert setup_outlook.main(["--cache-path", str(tmp_path / "cache.enc")]) == 2
+    captured = capsys.readouterr()
+    assert sentinel not in captured.out + captured.err
+    assert key not in captured.out + captured.err
+    assert captured.err == "Microsoft authorization setup failed.\n"
+
+
+def test_setup_preserves_cache_created_during_device_flow_without_replace(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from scripts import setup_outlook
+
+    path = tmp_path / "microsoft-token.enc"
+
+    class RacingDeviceApplication:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        def initiate_device_flow(self, *, scopes: list[str]) -> dict[str, str]:
+            return {"verification_uri": "https://microsoft.example/verify", "user_code": "ABCD-EFGH"}
+
+        def acquire_token_by_device_flow(self, flow: dict[str, str]) -> dict[str, str]:
+            path.write_bytes(b"cache-created-by-another-process")
+            return {"access_token": TOKEN}
+
+    monkeypatch.setenv("MS_CLIENT_ID", "client-id")
+    monkeypatch.setenv("MS_TOKEN_KEY", EncryptedTokenCache.generate_key().decode())
+    monkeypatch.setattr(setup_outlook.msal, "PublicClientApplication", RacingDeviceApplication)
+
+    assert setup_outlook.main(["--cache-path", str(path)]) == 2
+    assert path.read_bytes() == b"cache-created-by-another-process"
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert capsys.readouterr().err == "Microsoft authorization setup failed.\n"

@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 from collections.abc import Callable, Mapping
+from datetime import date
 from email import policy
 from email.message import EmailMessage
 from pathlib import Path
@@ -67,7 +68,9 @@ class EncryptedTokenCache:
             raise MailAuthError("Microsoft token cache is unavailable") from None
 
     @classmethod
-    def save(cls, cache: msal.SerializableTokenCache, path: Path, key: str | bytes) -> None:
+    def save(
+        cls, cache: msal.SerializableTokenCache, path: Path, key: str | bytes, *, replace: bool = True
+    ) -> None:
         fernet = cls._fernet(key)
         temporary_path: Path | None = None
         try:
@@ -80,7 +83,12 @@ class EncryptedTokenCache:
                 temporary_file.write(encrypted)
                 temporary_file.flush()
                 os.fsync(temporary_file.fileno())
-            os.replace(temporary_path, path)
+            if replace:
+                os.replace(temporary_path, path)
+            else:
+                # Linking a complete same-directory temporary file creates the final path only
+                # when it is still absent; unlike replace(), it cannot overwrite a racing writer.
+                os.link(temporary_path, path)
         except (OSError, TypeError, ValueError):
             raise MailAuthError("Microsoft token cache could not be saved") from None
         finally:
@@ -189,10 +197,15 @@ class GraphMailer:
         date_match = _DATE_IN_SUBJECT.search(subject)
         if date_match is None:
             raise MailSendError("Rendered digest subject must contain its local date")
-        material = "\n".join((date_match.group(0), self.recipient, subject)).encode("utf-8")
+        try:
+            local_date = date.fromisoformat(date_match.group(0)).isoformat()
+        except ValueError:
+            raise MailSendError("Rendered digest subject contains an invalid local date") from None
+        material = f"{local_date}\n{self.recipient}\n{subject}".encode()
         return f"accepted-{hashlib.sha256(material).hexdigest()}"
 
     def send(self, rendered: RenderedDigest) -> str:
+        fingerprint = self._message_fingerprint(rendered)
         token = self._access_token()
         payload = base64.b64encode(self._mime_message(rendered))
         try:
@@ -210,4 +223,4 @@ class GraphMailer:
             raise MailSendError(
                 f"Microsoft Graph did not accept the mail submission (HTTP {response.status_code})"
             )
-        return self._message_fingerprint(rendered)
+        return fingerprint

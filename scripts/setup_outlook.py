@@ -52,8 +52,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = application.acquire_token_by_device_flow(flow)
         if not isinstance(result, dict) or not result.get("access_token"):
             raise MailAuthError("Microsoft device authorization did not complete")
-        EncryptedTokenCache.save(cache, path, token_key)
-    except (MailAuthError, OSError, ValueError):
+        EncryptedTokenCache.save(cache, path, token_key, replace=args.replace)
+    except Exception:  # noqa: BLE001 - provider details can contain credentials or tokens
         print("Microsoft authorization setup failed.", file=sys.stderr)
         return 2
     return 0
