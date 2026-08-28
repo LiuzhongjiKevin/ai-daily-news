@@ -9,6 +9,7 @@ from ai_daily.collectors.base import (
     FeedParseError,
     PageParseError,
     SourceConfig,
+    SourceConfigurationError,
     SourceParseError,
     format_collection_error,
     format_source_failure,
@@ -34,6 +35,29 @@ class FixtureClient:
             request = httpx.Request("GET", url)
             raise httpx.HTTPStatusError("missing fixture", request=request, response=httpx.Response(404))
         return httpx.Response(200, content=self.responses[url], request=httpx.Request("GET", url))
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        "{}\n",
+        "sources: not-a-list\n",
+        "sources:\n  - id: incomplete\n",
+    ],
+)
+def test_load_sources_normalizes_malformed_yaml_to_safe_configuration_error(
+    tmp_path: Path, document: str
+) -> None:
+    """Would catch top-level or entry validation failures escaping as parser tracebacks."""
+    path = tmp_path / "sources.yaml"
+    path.write_text(document, encoding="utf-8")
+
+    with pytest.raises(SourceConfigurationError, match="Source configuration is invalid") as error:
+        from ai_daily.collectors.base import load_sources
+
+        load_sources(path)
+
+    assert "incomplete" not in str(error.value)
 
 
 @pytest.fixture

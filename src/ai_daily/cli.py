@@ -31,6 +31,10 @@ class ConfigurationError(RuntimeError):
     """Repository layout or validated runtime configuration is unavailable."""
 
 
+class RepositoryLayoutError(ConfigurationError):
+    """The command is running outside its supported editable repository checkout."""
+
+
 class _LazyEnricher:
     """Create the paid client only when a non-off run actually needs it."""
 
@@ -61,7 +65,7 @@ class _LazyMailer:
 def project_root() -> Path:
     root = Path(__file__).resolve().parents[2]
     if not (root / "config" / "settings.yaml").is_file() or not (root / "templates").is_dir():
-        raise ConfigurationError(
+        raise RepositoryLayoutError(
             "Run ai-daily from an editable repository checkout with config/ and templates/."
         )
     return root
@@ -198,6 +202,13 @@ def _run_command(args: argparse.Namespace) -> int:
         if send and not _validate_send_secrets(mode):
             return 2
         result = build_pipeline().run(RunOptions(send=send, force=args.force, ai_mode=args.ai_mode))
+    except RepositoryLayoutError:
+        print(
+            "Run failed: run from a checked-out repository installed with "
+            "python -m pip install -e .",
+            file=sys.stderr,
+        )
+        return 1
     except ConfigurationError:
         print("Run failed: runtime configuration is unavailable.", file=sys.stderr)
         return 1

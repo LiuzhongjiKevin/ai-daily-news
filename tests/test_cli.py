@@ -169,4 +169,7 @@ def test_noneditable_installation_fails_early_with_checkout_guidance(
     with pytest.raises(cli.ConfigurationError, match="editable repository checkout"):
         cli.project_root()
     assert cli.main(["preview"]) == 1
-    assert "site-packages" not in capsys.readouterr().err
+    output = capsys.readouterr().err
+    assert "python -m pip install -e ." in output
+    assert "site-packages" not in output
+    assert str(tmp_path) not in output

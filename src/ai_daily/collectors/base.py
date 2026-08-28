@@ -6,13 +6,17 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 import yaml
 from dateutil import parser
-from pydantic import BaseModel, Field, HttpUrl, model_validator
+from pydantic import BaseModel, Field, HttpUrl, ValidationError, model_validator
 
 from ai_daily.models import RawItem
 
 
 class SourceParseError(ValueError):
     """A source responded successfully but did not match its configured transport/shape."""
+
+
+class SourceConfigurationError(ValueError):
+    """The source configuration file is malformed or violates the source contract."""
 
 
 class FeedParseError(SourceParseError):
@@ -52,8 +56,22 @@ class Collector(Protocol):
 
 
 def load_sources(path: Path) -> list[SourceConfig]:
-    raw = yaml.safe_load(path.read_text("utf-8"))
-    return [SourceConfig.model_validate(item) for item in raw["sources"] if item.get("enabled", True)]
+    try:
+        raw = yaml.safe_load(path.read_text("utf-8"))
+        if not isinstance(raw, dict):
+            raise TypeError("top-level mapping required")
+        entries = raw.get("sources")
+        if not isinstance(entries, list):
+            raise TypeError("sources list required")
+        sources: list[SourceConfig] = []
+        for item in entries:
+            if not isinstance(item, dict):
+                raise TypeError("source entry mapping required")
+            if item.get("enabled", True):
+                sources.append(SourceConfig.model_validate(item))
+        return sources
+    except (OSError, TypeError, ValidationError, ValueError, yaml.YAMLError) as error:
+        raise SourceConfigurationError("Source configuration is invalid") from error
 
 
 def parse_datetime(value: datetime | str) -> datetime:
