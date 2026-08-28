@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import yaml
@@ -23,6 +24,35 @@ def test_ci_is_offline_and_uses_reviewed_action_pins() -> None:
     assert any('pytest -m "not live"' in step.get("run", "") for step in steps)
 
 
+def test_daily_uses_all_reviewed_action_pins() -> None:
+    """Would catch a mutable artifact action reference bypassing the reviewed supply-chain pin."""
+    steps = load_workflow("daily.yml")["jobs"]["daily"]["steps"]
+    assert [step["uses"] for step in steps if "uses" in step] == [
+        "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38",
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+    ]
+
+
+def test_workflows_install_exact_locked_dependency_sets_before_editable_package() -> None:
+    """Would catch Actions resolving broad package ranges instead of the reviewed lock files."""
+    ci_steps = load_workflow("ci.yml")["jobs"]["test"]["steps"]
+    daily_steps = load_workflow("daily.yml")["jobs"]["daily"]["steps"]
+    ci_commands = "\n".join(step.get("run", "") for step in ci_steps)
+    daily_commands = "\n".join(step.get("run", "") for step in daily_steps)
+
+    assert "pip install --requirement requirements-dev.lock" in ci_commands
+    assert 'pip install --no-deps --no-build-isolation -e ".[dev]"' in ci_commands
+    assert "pip install --requirement requirements-prod.lock" in daily_commands
+    assert 'pip install --no-deps --no-build-isolation -e .' in daily_commands
+    assert ".[dev]" not in daily_commands
+
+    for lock_name in ("requirements-prod.lock", "requirements-dev.lock"):
+        lines = (ROOT / lock_name).read_text(encoding="utf-8").splitlines()
+        assert lines
+        assert all(not line or line.startswith(("#", "-r ")) or "==" in line for line in lines)
+
+
 def test_daily_schedule_manual_inputs_and_state_commit_are_restricted() -> None:
     """Would catch scheduled runs accepting dispatch inputs or committing arbitrary workspace files."""
     workflow = load_workflow("daily.yml")
@@ -42,6 +72,33 @@ def test_daily_schedule_manual_inputs_and_state_commit_are_restricted() -> None:
     assert "git pull --rebase --autostash" in commit
 
 
+def test_scheduled_delivery_requires_explicit_repository_variable_gate() -> None:
+    """Would catch a default-branch push activating scheduled sends before cost review."""
+    workflow = load_workflow("daily.yml")
+    gate = workflow["jobs"]["daily"]["if"]
+    assert "github.event_name != 'schedule'" in gate
+    assert "vars.AI_DAILY_SCHEDULE_ENABLED == 'true'" in gate
+
+
+def test_daily_persists_durable_state_before_nonessential_artifact_upload() -> None:
+    """Would catch an artifact outage preventing the sent marker from being committed after send."""
+    workflow = load_workflow("daily.yml")
+    steps = workflow["jobs"]["daily"]["steps"]
+    run_index = next(index for index, step in enumerate(steps) if step.get("name") == "Run daily digest")
+    commit_index = next(
+        index for index, step in enumerate(steps) if step.get("name") == "Commit durable state"
+    )
+    artifact_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("uses") == "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+    )
+
+    assert run_index < commit_index < artifact_index
+    assert commit_index == run_index + 1
+    assert steps[artifact_index]["if"] == "always()"
+
+
 def test_operator_guide_contains_private_outlook_and_safety_invariants() -> None:
     """Would catch the handoff omitting secret handling, cost review, or delivery limitations."""
     guide = (ROOT / "README.md").read_text(encoding="utf-8")
@@ -55,5 +112,19 @@ def test_operator_guide_contains_private_outlook_and_safety_invariants() -> None
         "轮换",
         "补偿",
         "send=false",
+        "mode=full`、`send=false",
+        "允许公共客户端流",
+        "Fernet.generate_key",
+        "--replace",
+        "AI_DAILY_SCHEDULE_ENABLED",
+        "requirements-prod.lock",
+        "--no-deps --no-build-isolation -e .",
+        "可编辑仓库检出",
     ):
         assert phrase in guide
+
+
+def test_package_metadata_declares_editable_repository_runtime_contract() -> None:
+    """Would catch a published-wheel expectation despite repository-only runtime assets."""
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "editable repository checkout" in metadata["project"]["description"]

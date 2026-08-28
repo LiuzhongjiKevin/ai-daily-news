@@ -91,3 +91,82 @@ def test_validate_sources_threshold_writes_redacted_markdown_summary(
     assert "private" in summary.read_text(encoding="utf-8")
     assert "<redacted>" in summary.read_text(encoding="utf-8")
     assert main(["validate-sources", "--minimum-success", "80"]) == 1
+
+
+def test_cli_reports_already_sent_without_recipient_details(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Would catch a duplicate no-op being reported as a new send or leaking address details."""
+    from ai_daily.cli import main
+
+    monkeypatch.setattr(
+        "ai_daily.cli.build_pipeline", lambda: FakePipeline(FakeResult(already_sent=True))
+    )
+    assert main(["run", "--ai-mode", "off"]) == 0
+    output = capsys.readouterr().out
+    assert "Already-sent no-op" in output
+    assert "@" not in output
+
+
+def test_invalid_ai_mode_is_rejected_by_the_cli_parser(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Would catch an unsupported mode reaching the delivery pipeline."""
+    from ai_daily.cli import main
+
+    with pytest.raises(SystemExit) as error:
+        main(["preview", "--ai-mode", "invalid"])
+    assert error.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
+
+
+def test_configuration_failures_are_concise_redacted_and_programmer_errors_escape(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Would catch safe configuration failures leaking details or arbitrary bugs being swallowed."""
+    from ai_daily.cli import ConfigurationError, main
+
+    def missing_configuration() -> str:
+        raise ConfigurationError("actual-secret-value")
+
+    monkeypatch.setattr("ai_daily.cli._settings_mode", missing_configuration)
+    assert main(["preview"]) == 1
+    assert "actual-secret-value" not in capsys.readouterr().err
+
+    monkeypatch.setattr("ai_daily.cli._settings_mode", lambda: "off")
+    monkeypatch.setattr(
+        "ai_daily.cli.build_pipeline", lambda: (_ for _ in ()).throw(AssertionError("programmer bug"))
+    )
+    with pytest.raises(AssertionError, match="programmer bug"):
+        main(["preview"])
+
+
+def test_source_validation_configuration_failure_is_concise_and_redacted(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Would catch a broken source configuration exposing its contents in CLI output."""
+    from ai_daily.cli import ConfigurationError, main
+
+    monkeypatch.setattr(
+        "ai_daily.cli.validate_sources",
+        lambda: (_ for _ in ()).throw(ConfigurationError("private-value")),
+    )
+    assert main(["validate-sources"]) == 1
+    assert "private-value" not in capsys.readouterr().err
+
+
+def test_noneditable_installation_fails_early_with_checkout_guidance(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Would catch a wheel installation guessing site-packages parents for repository assets."""
+    from ai_daily import cli
+
+    installed_module = tmp_path / "site-packages" / "ai_daily" / "cli.py"
+    installed_module.parent.mkdir(parents=True)
+    installed_module.touch()
+    monkeypatch.setattr(cli, "__file__", str(installed_module))
+
+    with pytest.raises(cli.ConfigurationError, match="editable repository checkout"):
+        cli.project_root()
+    assert cli.main(["preview"]) == 1
+    assert "site-packages" not in capsys.readouterr().err

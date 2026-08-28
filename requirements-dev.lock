@@ -1,0 +1,11 @@
+# Development/test closure. Production pins remain in the included lock.
+-r requirements-prod.lock
+colorama==0.4.6
+coverage==7.15.4
+iniconfig==2.3.0
+pluggy==1.6.0
+Pygments==2.21.0
+pytest==8.4.2
+pytest-cov==6.3.0
+respx==0.23.1
+ruff==0.16.3

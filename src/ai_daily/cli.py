@@ -10,19 +10,25 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
+import yaml
 from openai import OpenAI
+from pydantic import ValidationError
 
 from ai_daily.ai import AIEnricher, AIEnrichmentError, OffEnricher
 from ai_daily.collectors import build_collector_registry, load_sources
 from ai_daily.collectors.base import SourceConfig, format_source_failure
 from ai_daily.config import AppSettings, load_prices, load_settings
 from ai_daily.http import RetryingClient
-from ai_daily.mail import GraphMailer, MailAuthError
-from ai_daily.pipeline import DailyPipeline, RunOptions
+from ai_daily.mail import GraphMailer, MailAuthError, MailSendError
+from ai_daily.pipeline import DailyPipeline, NoUsableDigestDataError, RunOptions
 from ai_daily.state import StateStore
 
 AI_MODES = ("full", "economy", "off")
 _SEND_SECRETS = ("MS_CLIENT_ID", "MS_TOKEN_KEY", "OUTLOOK_SENDER", "MAIL_TO")
+
+
+class ConfigurationError(RuntimeError):
+    """Repository layout or validated runtime configuration is unavailable."""
 
 
 class _LazyEnricher:
@@ -53,7 +59,33 @@ class _LazyMailer:
 
 
 def project_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[2]
+    if not (root / "config" / "settings.yaml").is_file() or not (root / "templates").is_dir():
+        raise ConfigurationError(
+            "Run ai-daily from an editable repository checkout with config/ and templates/."
+        )
+    return root
+
+
+def _load_settings(root: Path) -> AppSettings:
+    try:
+        return load_settings(root)
+    except (OSError, ValidationError, ValueError, yaml.YAMLError) as error:
+        raise ConfigurationError("Runtime settings are unavailable") from error
+
+
+def _load_prices(root: Path):
+    try:
+        return load_prices(root)
+    except (OSError, ValidationError, ValueError, yaml.YAMLError) as error:
+        raise ConfigurationError("Runtime prices are unavailable") from error
+
+
+def _load_sources(root: Path) -> list[SourceConfig]:
+    try:
+        return load_sources(root / "config" / "sources.yaml")
+    except (OSError, ValidationError, ValueError, yaml.YAMLError) as error:
+        raise ConfigurationError("Runtime sources are unavailable") from error
 
 
 def required_send_secret_names(mode: str) -> tuple[str, ...]:
@@ -62,7 +94,7 @@ def required_send_secret_names(mode: str) -> tuple[str, ...]:
 
 
 def _settings_mode() -> str:
-    return load_settings(project_root()).ai_mode
+    return _load_settings(project_root()).ai_mode
 
 
 def _validate_send_secrets(mode: str) -> bool:
@@ -76,13 +108,13 @@ def _validate_send_secrets(mode: str) -> bool:
 def build_pipeline() -> DailyPipeline:
     """Wire the existing typed services without authenticating or sending during construction."""
     root = project_root()
-    settings = load_settings(root)
+    settings = _load_settings(root)
     client = RetryingClient()
     return DailyPipeline(
         settings=settings,
-        prices=load_prices(root),
+        prices=_load_prices(root),
         state_store=StateStore(root / "data"),
-        sources=load_sources(root / "config" / "sources.yaml"),
+        sources=_load_sources(root),
         collector_registry=build_collector_registry(client),
         github_client=client,
         github_token=os.environ.get("GITHUB_TOKEN", ""),
@@ -111,7 +143,7 @@ def validate_sources() -> list[tuple[str, str | None]]:
     registry = build_collector_registry(client)
     since = datetime.now(UTC) - timedelta(days=90)
     outcomes: list[tuple[str, str | None]] = []
-    for source in load_sources(root / "config" / "sources.yaml"):
+    for source in _load_sources(root):
         try:
             items = registry.collectors[source.kind].collect(source, since)
             validate_collected_items(source, items)
@@ -160,14 +192,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_command(args: argparse.Namespace) -> int:
-    send = args.command == "run" and args.send
-    mode = args.ai_mode or _settings_mode()
-    if send and not _validate_send_secrets(mode):
-        return 2
     try:
+        send = args.command == "run" and args.send
+        mode = args.ai_mode or _settings_mode()
+        if send and not _validate_send_secrets(mode):
+            return 2
         result = build_pipeline().run(RunOptions(send=send, force=args.force, ai_mode=args.ai_mode))
-    except (MailAuthError, RuntimeError, OSError) as error:
-        print(f"Run failed: {type(error).__name__}.", file=sys.stderr)
+    except ConfigurationError:
+        print("Run failed: runtime configuration is unavailable.", file=sys.stderr)
+        return 1
+    except (MailAuthError, MailSendError, NoUsableDigestDataError, OSError):
+        print("Run failed: required service or local state is unavailable.", file=sys.stderr)
         return 1
     if result.already_sent:
         print(f"Already-sent no-op: {result.local_date}.")
@@ -184,12 +219,12 @@ def _validate_command(args: argparse.Namespace) -> int:
         return 2
     try:
         outcomes = validate_sources()
-    except (OSError, RuntimeError):
+        _write_source_summary(outcomes, args.minimum_success)
+    except (ConfigurationError, OSError):
         print("Source validation could not run.", file=sys.stderr)
         return 1
     successes = sum(failure is None for _, failure in outcomes)
     percent = (100 * successes / len(outcomes)) if outcomes else 0
-    _write_source_summary(outcomes, args.minimum_success)
     failed = [source for source, failure in outcomes if failure is not None]
     print(f"Source validation: {successes}/{len(outcomes)} ({percent:.1f}%).")
     if failed:

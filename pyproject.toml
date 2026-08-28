@@ -1,10 +1,11 @@
 [build-system]
-requires = ["hatchling>=1.27,<2"]
-build-backend = "hatchling.build"
+requires = ["setuptools==81.0.0"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-daily-news"
 version = "0.1.0"
+description = "Private AI daily runner; supported from an editable repository checkout."
 requires-python = ">=3.12"
 dependencies = [
   "beautifulsoup4>=4.13,<5",
@@ -35,5 +36,5 @@ markers = ["live: opt-in network validation for configured sources"]
 line-length = 100
 target-version = "py312"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/ai_daily"]
+[tool.setuptools.packages.find]
+where = ["src"]

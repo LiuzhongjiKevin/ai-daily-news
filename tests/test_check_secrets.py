@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -54,3 +55,27 @@ def test_scan_allows_nonmatching_nonempty_secret(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(module.os, "environ", {"DEEPSEEK_API_KEY": "different-value"})
 
     assert module.main() == 0
+
+
+def test_tracked_paths_uses_git_nul_delimited_output_without_losing_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Would catch newline parsing that splits a legitimate tracked filename."""
+    module = load_module()
+    completed = subprocess.CompletedProcess(
+        ["git", "ls-files", "-z"],
+        0,
+        stdout="normal.txt\0含 空格.bin\0line\nbreak.txt\0".encode(),
+    )
+    monkeypatch.setattr(module.subprocess, "run", lambda *args, **kwargs: completed)
+
+    assert module.tracked_paths() == [Path("normal.txt"), Path("含 空格.bin"), Path("line\nbreak.txt")]
+
+
+def test_read_tracked_bytes_preserves_binary_nul_data(tmp_path: Path) -> None:
+    """Would catch text decoding that makes a binary secret occurrence invisible to the scanner."""
+    module = load_module()
+    path = tmp_path / "binary.bin"
+    path.write_bytes(b"before\x00secret\xffafter")
+
+    assert module.read_tracked_bytes(path) == b"before\x00secret\xffafter"
