@@ -115,6 +115,7 @@ def test_renders_subject_all_formats_and_digest_details(templates_dir: Path) -> 
     assert "2026-08-24T07:00:00+00:00" in rendered.markdown
     assert "Source example.test is delayed" in rendered.html
     assert "Token" in rendered.text
+    assert "调用 1 次" in rendered.text
     assert "30-day" in rendered.markdown
     assert "## GitHub" in rendered.markdown
 

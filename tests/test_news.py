@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
+import pytest
+
 from ai_daily.models import RawItem
 from ai_daily.news import canonicalize_url, fingerprint, prepare_news
 
@@ -259,17 +261,249 @@ def test_single_media_item_receives_c_grade() -> None:
     assert clusters[0].trust_grade == "C"
 
 
+@pytest.mark.parametrize(
+    ("title", "excerpt", "source_category", "expected"),
+    [
+        ("OpenAI announces a new model", "", "company", "model"),
+        ("开发者接口更新", "全新 API 今日上线", "platform", "api"),
+        ("AI startup raises funding", "完成新一轮融资", "industry", "funding"),
+        ("Company files for IPO", "提交上市招股书", "industry", "ipo"),
+        ("Acme acquires an AI lab", "双方完成并购", "company", "acquisition"),
+        ("监管机构发布人工智能法案", "New AI regulation", "industry", "regulation"),
+        ("模型漏洞导致数据泄露", "Security incident", "model", "security"),
+        ("NVIDIA launches a new GPU", "新款 AI 芯片", "hardware", "chips"),
+        ("团队开源训练权重", "Open-source release", "company", "open_source"),
+        ("New benchmark paper", "研究团队发表论文", "research", "research"),
+        ("推出新 AI 助手产品", "A new app feature", "company", "product"),
+        ("Quarterly organization update", "", "hardware", "chips"),
+        ("Quarterly organization update", "", "open-source", "open_source"),
+        ("Quarterly organization update", "", "industry", "other"),
+    ],
+)
+def test_event_category_uses_bilingual_text_before_safe_source_alias_fallback(
+    title: str,
+    excerpt: str,
+    source_category: str,
+    expected: str,
+) -> None:
+    """Would catch source taxonomy aliases leaking into scoring or overriding event evidence."""
+    row = item(
+        "source",
+        "media",
+        title,
+        "https://media.test/event",
+        excerpt=excerpt,
+        category=source_category,
+    )
+
+    cluster = prepare_news([row], min_score=0, now=NOW)[0]
+
+    assert cluster.items[0].category == expected
+
+
+def test_category_classification_occurs_before_same_category_fuzzy_clustering() -> None:
+    """Would catch equivalent model reports staying split because their source aliases differ."""
+    clusters = prepare_news(
+        [
+            item(
+                "official",
+                "official",
+                "Acme releases the Nova model",
+                "https://official.test/nova",
+                category="company",
+            ),
+            item(
+                "media",
+                "media",
+                "Acme officially releases Nova model",
+                "https://media.test/nova",
+                category="industry",
+            ),
+        ],
+        now=NOW,
+    )
+
+    assert len(clusters) == 1
+    assert {row.category for row in clusters[0].items} == {"model"}
+
+
+def test_score_threshold_filters_routine_single_media_but_keeps_major_and_official_events() -> None:
+    """Would catch the candidate cap filling with low-value coverage or dropping verified events."""
+    clusters = prepare_news(
+        [
+            item(
+                "routine",
+                "media",
+                "Weekly AI industry roundup",
+                "https://routine.test/roundup",
+                category="industry",
+            ),
+            item(
+                "security",
+                "media",
+                "Critical model security breach disclosed",
+                "https://security.test/breach",
+                category="industry",
+            ),
+            item(
+                "official",
+                "official",
+                "Quarterly organization update",
+                "https://official.test/update",
+                category="company",
+            ),
+        ],
+        min_score=40,
+        now=NOW,
+    )
+
+    assert [cluster.title for cluster in clusters] == [
+        "Quarterly organization update",
+        "Critical model security breach disclosed",
+    ]
+    assert all(cluster.score >= 40 for cluster in clusters)
+
+
+def test_score_threshold_is_inclusive_at_the_boundary() -> None:
+    """Would catch an event scoring exactly at the configured threshold being discarded."""
+    row = item(
+        "research",
+        "media",
+        "New AI benchmark paper",
+        "https://media.test/research",
+        category="research",
+    )
+
+    assert len(prepare_news([row], min_score=45, now=NOW)) == 1
+    assert prepare_news([row], min_score=45.01, now=NOW) == []
+
+
+def test_discovery_publishers_count_as_media_evidence_without_becoming_official() -> None:
+    """Would catch allowlisted discovery publishers being ignored or promoted to A grade."""
+    rows = [
+        item(
+            "reuters-discovery",
+            "discovery",
+            "AI startup raises major funding",
+            "https://www.reuters.com/technology/funding",
+            category="industry",
+        ),
+        item(
+            "qbitai-discovery",
+            "discovery",
+            "AI startup raises funding round",
+            "https://www.qbitai.com/funding",
+            category="industry",
+        ),
+    ]
+
+    clusters = prepare_news(rows, now=NOW)
+
+    assert len(clusters) == 1
+    assert clusters[0].trust_grade == "B"
+
+
+def test_discovery_and_native_media_corroborate_across_domains() -> None:
+    """Would catch native and allowlisted discovery evidence remaining C grade across publishers."""
+    clusters = prepare_news(
+        [
+            item(
+                "reuters-discovery",
+                "discovery",
+                "AI startup raises major funding",
+                "https://technology.reuters.com/ai/funding",
+                category="industry",
+            ),
+            item(
+                "techcrunch",
+                "media",
+                "AI startup raises funding round",
+                "https://techcrunch.com/ai/funding",
+                category="industry",
+            ),
+        ],
+        now=NOW,
+    )
+
+    assert clusters[0].trust_grade == "B"
+
+
+def test_same_publisher_discovery_and_media_duplicates_remain_c_grade() -> None:
+    """Would catch subdomain and apex URLs from one publisher masquerading as corroboration."""
+    clusters = prepare_news(
+        [
+            item(
+                "reuters-discovery",
+                "discovery",
+                "AI startup raises major funding",
+                "https://technology.reuters.com/ai/funding",
+                category="industry",
+            ),
+            item(
+                "reuters-native",
+                "media",
+                "AI startup raises funding round",
+                "https://reuters.com/business/funding",
+                category="industry",
+            ),
+        ],
+        now=NOW,
+    )
+
+    assert clusters[0].trust_grade == "C"
+
+
+def test_single_discovery_result_remains_c_grade() -> None:
+    """Would catch discovery transport alone being treated as multi-source confirmation."""
+    clusters = prepare_news(
+        [
+            item(
+                "reuters-discovery",
+                "discovery",
+                "AI startup raises major funding",
+                "https://www.reuters.com/technology/funding",
+                category="industry",
+            )
+        ],
+        now=NOW,
+    )
+
+    assert clusters[0].trust_grade == "C"
+
+
 def test_output_is_capped_at_requested_limit() -> None:
     """Would catch the candidate cap being ignored by downstream digest preparation."""
+    distinct_titles = [
+        "Amber",
+        "Binary",
+        "Cobalt",
+        "Dynamo",
+        "Eclipse",
+        "Fjord",
+        "Granite",
+        "Helix",
+        "Indigo",
+        "Jupiter",
+        "Krypton",
+        "Lantern",
+        "Meteor",
+        "Nimbus",
+        "Orbit",
+        "Prairie",
+        "Quartz",
+        "Rocket",
+        "Summit",
+        "Tundra",
+    ]
     rows = [
         item(
             str(number),
             "official",
-            f"Model release {number}",
+            title,
             f"https://example.test/{number}",
-            category=f"candidate-{number}",
+            category="model",
         )
-        for number in range(20)
+        for number, title in enumerate(distinct_titles)
     ]
 
     assert len(prepare_news(rows, limit=12)) == 12

@@ -26,11 +26,73 @@ CATEGORY_POINTS = {
     "chips": 15,
     "open_source": 15,
 }
+CANONICAL_EVENT_CATEGORIES = frozenset({*CATEGORY_POINTS, "other"})
+SOURCE_CATEGORY_ALIASES = {
+    "hardware": "chips",
+    "chip": "chips",
+    "open-source": "open_source",
+    "open source": "open_source",
+}
+MULTIPART_PUBLIC_SUFFIXES = frozenset({"co.jp", "co.uk", "com.au", "com.br", "com.cn", "com.sg"})
+
+# Specific risk/transaction events win over broad technical nouns in the same headline.
+# Within the technical group, evidence-bearing categories precede generic model/product terms.
+CATEGORY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ipo", ("ipo", "initial public offering", "上市", "招股")),
+    (
+        "acquisition",
+        ("acquisition", "acquisitions", "acquire", "acquires", "acquired", "merger", "mergers", "收购", "并购", "合并"),
+    ),
+    ("funding", ("funding", "financing", "fundraise", "fundraising", "raises", "raised", "融资", "募资")),
+    (
+        "regulation",
+        ("regulation", "regulations", "regulator", "regulatory", "policy", "law", "监管", "政策", "法案", "条例"),
+    ),
+    (
+        "security",
+        ("security", "vulnerability", "vulnerabilities", "breach", "attack", "安全", "漏洞", "攻击", "泄露"),
+    ),
+    ("chips", ("chip", "chips", "gpu", "gpus", "semiconductor", "semiconductors", "芯片", "算力", "半导体")),
+    ("open_source", ("open source", "open-source", "open_source", "开源")),
+    ("api", ("api", "apis", "sdk", "接口")),
+    ("research", ("research", "paper", "papers", "benchmark", "benchmarks", "研究", "论文", "基准")),
+    ("model", ("model", "models", "llm", "llms", "gpt", "claude", "gemini", "模型", "大模型")),
+    (
+        "product",
+        ("product", "products", "feature", "features", "app", "apps", "assistant", "产品", "功能", "应用", "助手"),
+    ),
+)
 
 
 def normalize_text(value: str) -> str:
     """Normalize Unicode and whitespace for deterministic textual comparisons."""
     return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
+def _contains_keyword(text: str, keyword: str) -> bool:
+    if not keyword.isascii():
+        return keyword in text
+    return re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", text) is not None
+
+
+def classify_event_category(item: RawItem) -> str:
+    """Classify one event from bilingual evidence, using source taxonomy only as fallback."""
+    evidence = normalize_text(f"{item.title}\n{item.excerpt}")
+    for category, keywords in CATEGORY_KEYWORDS:
+        if any(_contains_keyword(evidence, keyword) for keyword in keywords):
+            return category
+    source_category = normalize_text(item.category)
+    alias = SOURCE_CATEGORY_ALIASES.get(source_category, source_category.replace("-", "_"))
+    return alias if alias in CANONICAL_EVENT_CATEGORIES else "other"
+
+
+def _publisher_domain(url: str) -> str:
+    hostname = (urlsplit(canonicalize_url(url)).hostname or "").casefold().strip(".")
+    labels = hostname.split(".")
+    if len(labels) < 3:
+        return hostname
+    suffix_length = 2 if ".".join(labels[-2:]) in MULTIPART_PUBLIC_SUFFIXES else 1
+    return ".".join(labels[-(suffix_length + 1) :])
 
 
 def canonicalize_url(url: str) -> str:
@@ -163,12 +225,13 @@ def grade_cluster(items: list[RawItem]) -> Literal["A", "B", "C"]:
     """Assign source-verification trust grades to one cluster."""
     if any(item.source_type in {"official", "release"} for item in items):
         return "A"
-    media_domains = {
-        urlsplit(canonicalize_url(str(item.canonical_url))).hostname
+    publisher_domains = {
+        _publisher_domain(str(item.canonical_url))
         for item in items
-        if item.source_type == "media"
+        if item.source_type in {"media", "discovery"}
     }
-    return "B" if len(media_domains) >= 2 else "C"
+    publisher_domains.discard("")
+    return "B" if len(publisher_domains) >= 2 else "C"
 
 
 def score_cluster(cluster: NewsCluster, now: datetime) -> float:
@@ -180,18 +243,29 @@ def score_cluster(cluster: NewsCluster, now: datetime) -> float:
     return TRUST_POINTS[cluster.trust_grade] + category + recency
 
 
-def prepare_news(items: list[RawItem], limit: int = 12) -> list[NewsCluster]:
+def prepare_news(
+    items: list[RawItem],
+    limit: int = 12,
+    *,
+    min_score: float = 0.0,
+    now: datetime | None = None,
+) -> list[NewsCluster]:
     """Create a stably ordered, capped set of verified news clusters."""
-    now = datetime.now(UTC)
+    scoring_time = now or datetime.now(UTC)
+    normalized_items = [
+        item.model_copy(update={"category": classify_event_category(item)}) for item in items
+    ]
     clusters: list[NewsCluster] = []
-    for members in cluster_items(items):
+    for members in cluster_items(normalized_items):
         cluster = NewsCluster(
             cluster_id=_cluster_id(members),
             title=members[0].title,
             items=members,
             trust_grade=grade_cluster(members),
         )
-        clusters.append(cluster.model_copy(update={"score": score_cluster(cluster, now)}))
+        scored = cluster.model_copy(update={"score": score_cluster(cluster, scoring_time)})
+        if scored.score >= min_score:
+            clusters.append(scored)
 
     clusters.sort(
         key=lambda cluster: (

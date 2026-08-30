@@ -38,7 +38,7 @@ AI 要闻 {{ digest.news|length }} 条 · GitHub 周榜 Top {{ digest.repositori
 
 {% endif %}{% if digest.usage %}## AI 用量与成本
 
-{% for usage in digest.usage %}- {{ usage.stage|markdown_text }} Token：命中 {{ usage.input_cache_hit_tokens }} / 未命中 {{ usage.input_cache_miss_tokens }} / 输出 {{ usage.output_tokens }}
+{% for usage in digest.usage %}- {{ usage.stage|markdown_text }} Token：调用 {{ usage.call_count }} 次 / 命中 {{ usage.input_cache_hit_tokens }} / 未命中 {{ usage.input_cache_miss_tokens }} / 输出 {{ usage.output_tokens }}
 {% endfor %}
 本次成本：{{ cost.currency|markdown_text }} {{ cost.total }}
 

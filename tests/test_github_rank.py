@@ -5,6 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from ai_daily.collectors import github
 from ai_daily.collectors.github import discover_candidates, fetch_repo_snapshots
 from ai_daily.github_rank import (
     historical_candidate_names,
@@ -101,6 +102,37 @@ def test_discovery_unions_trending_search_and_history_case_insensitively() -> No
     }
 
 
+def test_discovery_rejects_malformed_search_json_with_sanitized_typed_error() -> None:
+    """Would catch malformed Search JSON bypassing cached fallback or leaking its response body."""
+    client = GitHubFixtureClient()
+    client.search = b'{"token":"ghp-secret"'
+
+    with pytest.raises(github.GitHubResponseError, match="GitHub search response is invalid") as error:
+        discover_candidates(client, "token", TODAY)
+
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert "ghp-secret" not in str(error.value)
+
+
+def test_discovery_rejects_missing_search_fields_with_typed_data_error() -> None:
+    """Would catch a structurally unusable Search response being treated as an empty success."""
+    client = GitHubFixtureClient()
+    client.search = b'{"items":[{"name":"missing full name"}]}'
+
+    with pytest.raises(github.GitHubDataError, match="GitHub search data is invalid"):
+        discover_candidates(client, "token", TODAY)
+
+
+def test_discovery_rejects_empty_required_repository_name() -> None:
+    """Would catch an empty required Search field being silently discarded as a usable response."""
+    client = GitHubFixtureClient()
+    client.search = b'{"items":[{"full_name":""}]}'
+
+    with pytest.raises(github.GitHubDataError, match="GitHub search data is invalid"):
+        discover_candidates(client, "token", TODAY)
+
+
 def test_fetch_snapshots_maps_metadata_filters_ineligible_and_caps_requests() -> None:
     """Would catch invalid GitHub metadata mapping or an unbounded repository API fan-out."""
     client = GitHubFixtureClient()
@@ -131,13 +163,54 @@ def test_fetch_snapshots_maps_metadata_filters_ineligible_and_caps_requests() ->
     assert all(call[1]["headers"]["Authorization"] == "Bearer token" for call in metadata_calls)
 
 
-def test_fetch_snapshots_rejects_malformed_repository_records() -> None:
-    """Would catch missing mandatory repository counters being converted into invented values."""
+def test_fetch_snapshots_isolates_malformed_repository_records_and_warns() -> None:
+    """Would catch one malformed repository aborting usable metadata or disappearing silently."""
     client = GitHubFixtureClient()
-    client.repos[0].pop("stargazers_count")
+    malformed = {**client.repos[0], "full_name": "bad/repo"}
+    malformed.pop("stargazers_count")
+    client.repos.append(malformed)
 
-    with pytest.raises(TypeError, match="stargazers_count"):
-        fetch_repo_snapshots(client, "token", ["acme/widget"], NOW)
+    batch = fetch_repo_snapshots(client, "token", ["bad/repo", "acme/widget"], NOW)
+
+    assert isinstance(batch, github.GitHubSnapshotBatch)
+    assert [row.repository for row in batch] == ["acme/widget"]
+    assert batch.warnings == (
+        "GitHub metadata partial: 1/2 repositories unavailable (data=1)",
+    )
+
+
+@pytest.mark.parametrize("failure_kind", ["http_404", "transport", "response"])
+def test_fetch_snapshots_isolates_http_transport_and_json_failures(failure_kind: str) -> None:
+    """Would catch one repository-level failure source breaking the rest of the bounded batch."""
+    base = GitHubFixtureClient()
+
+    class PartialClient:
+        def get(self, url: str, **kwargs: object) -> httpx.Response:
+            if url.endswith("/bad/repo"):
+                request = httpx.Request("GET", url)
+                if failure_kind == "http_404":
+                    raise httpx.HTTPStatusError(
+                        "body contains ghp-secret",
+                        request=request,
+                        response=httpx.Response(404, request=request),
+                    )
+                if failure_kind == "transport":
+                    raise httpx.ConnectError("token ghp-secret", request=request)
+                return httpx.Response(200, content=b'{"token":"ghp-secret"', request=request)
+            return base.get(url, **kwargs)
+
+    batch = fetch_repo_snapshots(
+        PartialClient(),  # type: ignore[arg-type]
+        "token",
+        ["bad/repo", "acme/widget"],
+        NOW,
+    )
+
+    assert [row.repository for row in batch] == ["acme/widget"]
+    assert batch.warnings == (
+        f"GitHub metadata partial: 1/2 repositories unavailable ({failure_kind}=1)",
+    )
+    assert "secret" not in batch.warnings[0]
 
 
 def test_ranking_uses_full_baseline_clamps_loss_and_sorts_ties() -> None:

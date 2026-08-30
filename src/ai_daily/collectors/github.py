@@ -1,8 +1,10 @@
 import re
+from collections import Counter
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from urllib.parse import urlparse
 
+import httpx
 from bs4 import BeautifulSoup
 
 from ai_daily.collectors.base import (
@@ -18,6 +20,39 @@ GITHUB_API_VERSION = "2022-11-28"
 GITHUB_ACCEPT = "application/vnd.github+json"
 MAX_CANDIDATE_REPOSITORIES = 100
 METADATA_BATCH_SIZE = 50
+
+
+class GitHubResponseError(RuntimeError):
+    """A GitHub endpoint returned content that could not be parsed without exposing its body."""
+
+
+class GitHubDataError(RuntimeError):
+    """Parsed GitHub data violates the required ranking schema."""
+
+
+class GitHubSnapshotBatch(list[RepoSnapshot]):
+    """List-compatible snapshot result carrying redacted partial-degradation warnings."""
+
+    def __init__(
+        self,
+        snapshots: Iterable[RepoSnapshot] = (),
+        *,
+        warnings: Iterable[str] = (),
+    ) -> None:
+        super().__init__(snapshots)
+        self.warnings = tuple(warnings)
+
+
+def _response_json(response: httpx.Response, message: str) -> object:
+    invalid_response = False
+    try:
+        payload = response.json()
+    except ValueError:
+        invalid_response = True
+        payload = None
+    if invalid_response:
+        raise GitHubResponseError(message)
+    return payload
 
 
 def github_headers(token: str) -> dict[str, str]:
@@ -73,13 +108,14 @@ def discover_candidates(
             params={"q": query, "sort": "stars", "order": "desc", "per_page": 100},
             headers=github_headers(token),
         )
-        payload = response.json()
+        payload = _response_json(response, "GitHub search response is invalid")
         if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
-            raise TypeError("GitHub repository search response has no items list")
+            raise GitHubDataError("GitHub search data is invalid")
         for item in payload["items"]:
-            if not isinstance(item, dict) or not isinstance(item.get("full_name"), str):
-                raise TypeError("GitHub repository search item has no full_name")
-            add([item["full_name"]])
+            full_name = item.get("full_name") if isinstance(item, dict) else None
+            if not isinstance(full_name, str) or not full_name.strip():
+                raise GitHubDataError("GitHub search data is invalid")
+            add([full_name])
     return list(names.values())
 
 
@@ -90,7 +126,7 @@ def fetch_repo_snapshots(
     collected_at: datetime,
     *,
     max_repositories: int = MAX_CANDIDATE_REPOSITORIES,
-) -> list[RepoSnapshot]:
+) -> GitHubSnapshotBatch:
     """Fetch metadata in candidate priority order through at most 100 GitHub API requests."""
     if max_repositories < 1:
         raise ValueError("max_repositories must be positive")
@@ -101,42 +137,71 @@ def fetch_repo_snapshots(
             unique.setdefault(normalized.casefold(), normalized)
     selected = list(unique.values())[: min(max_repositories, MAX_CANDIDATE_REPOSITORIES)]
     snapshots: list[RepoSnapshot] = []
+    failure_sources: Counter[str] = Counter()
     for start in range(0, len(selected), METADATA_BATCH_SIZE):
         for name in selected[start : start + METADATA_BATCH_SIZE]:
-            response = client.get(
-                f"https://api.github.com/repos/{name}", headers=github_headers(token)
-            )
-            snapshot = _snapshot_from_metadata(response.json(), collected_at)
+            try:
+                response = client.get(
+                    f"https://api.github.com/repos/{name}", headers=github_headers(token)
+                )
+            except httpx.HTTPStatusError as error:
+                source = "http_404" if error.response.status_code == 404 else "http_status"
+                failure_sources[source] += 1
+                continue
+            except httpx.RequestError:
+                failure_sources["transport"] += 1
+                continue
+
+            try:
+                payload = _response_json(response, "GitHub repository response is invalid")
+            except GitHubResponseError:
+                failure_sources["response"] += 1
+                continue
+            try:
+                snapshot = _snapshot_from_metadata(payload, collected_at)
+            except GitHubDataError:
+                failure_sources["data"] += 1
+                continue
             if not snapshot.archived and not snapshot.is_fork:
                 snapshots.append(snapshot)
-    return snapshots
+    warnings: list[str] = []
+    if failure_sources:
+        details = ", ".join(
+            f"{source}={failure_sources[source]}" for source in sorted(failure_sources)
+        )
+        warnings.append(
+            f"GitHub metadata partial: {sum(failure_sources.values())}/{len(selected)} "
+            f"repositories unavailable ({details})"
+        )
+    return GitHubSnapshotBatch(snapshots, warnings=warnings)
 
 
 def _snapshot_from_metadata(payload: object, collected_at: datetime) -> RepoSnapshot:
     if not isinstance(payload, dict):
-        raise TypeError("GitHub repository response is not an object")
+        raise GitHubDataError("GitHub repository data is invalid")
     required_text = ("full_name", "updated_at")
     for key in required_text:
         if not isinstance(payload.get(key), str) or not payload[key].strip():
-            raise TypeError(f"GitHub repository response has invalid {key}")
+            raise GitHubDataError("GitHub repository data is invalid")
     for key in ("stargazers_count", "forks_count"):
-        if isinstance(payload.get(key), bool) or not isinstance(payload.get(key), int):
-            raise TypeError(f"GitHub repository response has invalid {key}")
+        value = payload.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise GitHubDataError("GitHub repository data is invalid")
     for key in ("archived", "fork"):
         if not isinstance(payload.get(key), bool):
-            raise TypeError(f"GitHub repository response has invalid {key}")
+            raise GitHubDataError("GitHub repository data is invalid")
     description = payload.get("description")
     language = payload.get("language")
     if description is not None and not isinstance(description, str):
-        raise ValueError("GitHub repository response has invalid description")
+        raise GitHubDataError("GitHub repository data is invalid")
     if language is not None and not isinstance(language, str):
-        raise ValueError("GitHub repository response has invalid language")
+        raise GitHubDataError("GitHub repository data is invalid")
     try:
         updated_at = datetime.fromisoformat(payload["updated_at"])
-    except ValueError as exc:
-        raise ValueError("GitHub repository response has invalid updated_at") from exc
+    except ValueError:
+        raise GitHubDataError("GitHub repository data is invalid") from None
     if updated_at.tzinfo is None:
-        raise ValueError("GitHub repository response has timezone-naive updated_at")
+        raise GitHubDataError("GitHub repository data is invalid")
     return RepoSnapshot(
         repository=payload["full_name"],
         description=description or "",

@@ -1,3 +1,4 @@
+import json
 import traceback
 from datetime import UTC, datetime
 from pathlib import Path
@@ -87,15 +88,22 @@ def settings() -> AppSettings:
     return AppSettings(ai_model="deepseek-v4-flash", ai_max_output_tokens=256)
 
 
-def test_off_mode_never_calls_client_and_leaves_inputs_unchanged() -> None:
-    """Would catch the off switch still constructing an AI request or mutating digest data."""
+def test_off_mode_never_calls_client_and_populates_useful_deterministic_chinese() -> None:
+    """Would catch off/fallback output being empty, non-Chinese scaffolding, or mutating inputs."""
     original_news = [news_cluster()]
     original_repos = [ranked_repo()]
 
     news, repos, usage = OffEnricher(ExplodingClient()).enrich(original_news, original_repos, mode="off")
 
-    assert news == original_news
-    assert repos == original_repos
+    assert original_news[0].summary == ""
+    assert original_news[0].why_it_matters == ""
+    assert original_repos[0].explanation == ""
+    assert news[0].summary.startswith("事件概述：")
+    assert "可信度为 A 级" in news[0].why_it_matters
+    assert repos[0].explanation.startswith("项目概览：")
+    assert "近七日新增 20 Star" in repos[0].explanation
+    assert len(news[0].summary) <= 500
+    assert len(repos[0].explanation) <= 500
     assert usage == []
 
 
@@ -126,6 +134,7 @@ def test_non_empty_modes_make_one_batched_call_per_section(mode: str) -> None:
         {
             "stage": "news",
             "model": "deepseek-v4-flash",
+            "call_count": 1,
             "input_cache_hit_tokens": 12,
             "input_cache_miss_tokens": 34,
             "output_tokens": 56,
@@ -133,6 +142,7 @@ def test_non_empty_modes_make_one_batched_call_per_section(mode: str) -> None:
         {
             "stage": "github",
             "model": "deepseek-v4-flash",
+            "call_count": 1,
             "input_cache_hit_tokens": 0,
             "input_cache_miss_tokens": 0,
             "output_tokens": 0,
@@ -152,20 +162,37 @@ def test_empty_sections_are_not_sent_to_the_model() -> None:
     assert [record.stage for record in usage] == ["github"]
 
 
-def test_economy_mode_preserves_rule_selected_news_order_when_ai_returns_subset() -> None:
-    """Would catch economy mode dropping rule-selected news based on an AI selection response."""
+def test_economy_mode_repairs_partial_news_and_summarizes_every_rule_selected_item() -> None:
+    """Would catch economy mode accepting a partial summary set for rule-selected news."""
     first = news_cluster("cluster-one")
     second = news_cluster("cluster-two")
-    second.summary = "Preserve this summary"
-    second.why_it_matters = "Preserve this rationale"
-    client = FixtureClient([chat_response(fixture_response("ai_news_response.json"))])
+    complete = json.dumps(
+        {
+            "selected_cluster_ids": ["cluster-one", "cluster-two"],
+            "items": [
+                {
+                    "cluster_id": "cluster-one",
+                    "summary": "第一条摘要",
+                    "why_it_matters": "第一条价值",
+                },
+                {
+                    "cluster_id": "cluster-two",
+                    "summary": "第二条摘要",
+                    "why_it_matters": "第二条价值",
+                },
+            ],
+        },
+        ensure_ascii=False,
+    )
+    client = FixtureClient(
+        [chat_response(fixture_response("ai_news_response.json")), chat_response(complete)]
+    )
 
     news, _, _ = AIEnricher(client, settings()).enrich([first, second], [], mode="economy")
 
     assert [cluster.cluster_id for cluster in news] == ["cluster-one", "cluster-two"]
-    assert news[0].summary == "A concise model-launch summary."
-    assert news[1].summary == "Preserve this summary"
-    assert news[1].why_it_matters == "Preserve this rationale"
+    assert [cluster.summary for cluster in news] == ["第一条摘要", "第二条摘要"]
+    assert len(client.calls) == 2
 
 
 def test_full_mode_explicitly_uses_ai_news_selection() -> None:
@@ -180,9 +207,23 @@ def test_full_mode_explicitly_uses_ai_news_selection() -> None:
 
 
 def test_prompts_bound_excerpts_descriptions_output_and_exclude_urls() -> None:
-    """Would catch source URLs or unbounded article text reaching the external model."""
-    long_excerpt = "n" * 801
+    """Would catch omitted source evidence, URLs, or per-cluster excerpt overflow in prompts."""
+    long_excerpt = "n" * 600
+    conflicting_excerpt = "c" * 600
     long_description = "r" * 301
+    cluster = news_cluster(excerpt=long_excerpt)
+    cluster.items.append(
+        RawItem(
+            source_id="coverage",
+            source_name="Coverage Desk",
+            source_type="media",
+            title="Coverage disputes one launch detail",
+            published_at=datetime(2026, 8, 24, 8, tzinfo=UTC),
+            canonical_url="https://other.private.test/full-body",
+            excerpt=conflicting_excerpt,
+            category="security",
+        )
+    )
     client = FixtureClient(
         [
             chat_response(fixture_response("ai_news_response.json")),
@@ -191,7 +232,7 @@ def test_prompts_bound_excerpts_descriptions_output_and_exclude_urls() -> None:
     )
 
     AIEnricher(client, settings()).enrich(
-        [news_cluster(excerpt=long_excerpt)],
+        [cluster],
         [ranked_repo(description=long_description)],
         mode="full",
     )
@@ -202,11 +243,59 @@ def test_prompts_bound_excerpts_descriptions_output_and_exclude_urls() -> None:
         for message in call["messages"]  # type: ignore[index]
     )
     assert "https://private.example.test/full-article" not in request_text
-    assert long_excerpt not in request_text
+    assert "https://other.private.test/full-body" not in request_text
+    assert conflicting_excerpt not in request_text
     assert long_description not in request_text
-    assert "n" * 800 in request_text
     assert "r" * 300 in request_text
+    assert "Simplified Chinese" in request_text
+    assert "简体中文" in request_text
+    assert "conflict" in request_text.casefold()
     assert all(call["max_tokens"] == 256 for call in client.calls)
+
+    news_prompt = client.calls[0]["messages"][1]["content"]  # type: ignore[index]
+    payload = json.loads(str(news_prompt).splitlines()[-1])
+    evidence = payload[0]["evidence"]
+    assert [(row["source_name"], row["published_at"], row["source_type"], row["category"]) for row in evidence] == [
+        ("Acme", "2026-08-24", "official", "other"),
+        ("Coverage Desk", "2026-08-24", "media", "security"),
+    ]
+    assert payload[0]["trust_grade"] == "A"
+    assert sum(len(row["excerpt"]) for row in evidence) == 800
+
+
+@pytest.mark.parametrize("mode", ["full", "economy"])
+def test_repository_enrichment_repairs_partial_output_and_explains_every_input(mode: str) -> None:
+    """Would catch either AI mode accepting a partial GitHub Top-10 explanation list."""
+    second = ranked_repo("other/tool")
+    partial = fixture_response("ai_repos_response.json")
+    complete = json.dumps(
+        {
+            "items": [
+                {"repository": "acme/widget", "explanation": "第一项说明"},
+                {"repository": "other/tool", "explanation": "第二项说明"},
+            ]
+        },
+        ensure_ascii=False,
+    )
+    client = FixtureClient([chat_response(partial), chat_response(complete)])
+
+    _, repos, _ = AIEnricher(client, settings()).enrich(
+        [], [ranked_repo(), second], mode=mode
+    )
+
+    assert [repo.explanation for repo in repos] == ["第一项说明", "第二项说明"]
+    assert len(client.calls) == 2
+
+
+def test_empty_repository_output_is_invalid_after_single_repair() -> None:
+    """Would catch an empty model response silently erasing every requested repository explanation."""
+    empty = chat_response('{"items":[]}')
+    client = FixtureClient([empty, empty])
+
+    with pytest.raises(AIEnrichmentError, match="every input repository"):
+        AIEnricher(client, settings()).enrich([], [ranked_repo()], mode="full")
+
+    assert len(client.calls) == 2
 
 
 def test_retries_once_after_malformed_json_with_compact_validation_error() -> None:
@@ -257,6 +346,7 @@ def test_successful_repair_retry_aggregates_usage_from_both_provider_schemas() -
         {
             "stage": "news",
             "model": "deepseek-v4-flash",
+            "call_count": 2,
             "input_cache_hit_tokens": 9,
             "input_cache_miss_tokens": 9,
             "output_tokens": 16,
@@ -317,6 +407,81 @@ def test_api_failure_does_not_retain_secret_in_exception_chain_or_traceback() ->
     assert "sk-secret" not in rendered
 
 
+def test_failed_repair_preserves_both_paid_attempts_without_provider_content() -> None:
+    """Would catch invalid paid responses disappearing from fallback cost or leaking their text."""
+    secret_payload = '{"selected_cluster_ids":["sk-secret"],"items":[]}'
+    client = FixtureClient(
+        [
+            chat_response(
+                secret_payload,
+                usage={"prompt_tokens": 10, "completion_tokens": 2},
+            ),
+            chat_response(
+                secret_payload,
+                usage={"prompt_tokens": 20, "completion_tokens": 3},
+            ),
+        ]
+    )
+
+    with pytest.raises(AIEnrichmentError, match="unknown cluster") as error:
+        AIEnricher(client, settings()).enrich([news_cluster()], [], mode="full")
+
+    assert [record.model_dump() for record in error.value.usage] == [
+        {
+            "stage": "news",
+            "model": "deepseek-v4-flash",
+            "call_count": 2,
+            "input_cache_hit_tokens": 0,
+            "input_cache_miss_tokens": 30,
+            "output_tokens": 5,
+        }
+    ]
+    rendered = "".join(traceback.format_exception(error.value))
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert "sk-secret" not in rendered
+
+
+def test_transport_failure_after_paid_invalid_response_preserves_usage() -> None:
+    """Would catch a repair transport error erasing usage from the first paid response."""
+    client = FixtureClient(
+        [
+            chat_response(
+                "not-json",
+                usage={"prompt_tokens": 13, "completion_tokens": 4},
+            ),
+            RuntimeError("provider failed with sk-secret"),
+        ]
+    )
+
+    with pytest.raises(AIEnrichmentError, match="request failed") as error:
+        AIEnricher(client, settings()).enrich([news_cluster()], [], mode="full")
+
+    assert error.value.usage[0].call_count == 1
+    assert error.value.usage[0].input_cache_miss_tokens == 13
+    assert error.value.usage[0].output_tokens == 4
+    assert "sk-secret" not in "".join(traceback.format_exception(error.value))
+
+
+def test_later_section_failure_carries_usage_from_the_successful_news_section() -> None:
+    """Would catch a GitHub failure erasing the already-paid successful news call."""
+    client = FixtureClient(
+        [
+            chat_response(
+                fixture_response("ai_news_response.json"),
+                usage={"prompt_tokens": 17, "completion_tokens": 5},
+            ),
+            RuntimeError("repository request failed"),
+        ]
+    )
+
+    with pytest.raises(AIEnrichmentError) as error:
+        AIEnricher(client, settings()).enrich([news_cluster()], [ranked_repo()], mode="full")
+
+    assert [(record.stage, record.call_count) for record in error.value.usage] == [("news", 1)]
+    assert error.value.usage[0].input_cache_miss_tokens == 17
+
+
 def test_maps_responses_style_usage_fields() -> None:
     """Would catch Responses API cached tokens being omitted from cost accounting."""
     client = FixtureClient(
@@ -338,3 +503,43 @@ def test_maps_responses_style_usage_fields() -> None:
     assert usage[0].input_cache_hit_tokens == 5
     assert usage[0].input_cache_miss_tokens == 4
     assert usage[0].output_tokens == 3
+
+
+def test_maps_conventional_chat_completion_prompt_tokens_as_cache_miss() -> None:
+    """Would catch billable prompt tokens being reported as free when cache detail is absent."""
+    client = FixtureClient(
+        [
+            chat_response(
+                fixture_response("ai_news_response.json"),
+                usage={"prompt_tokens": 19, "completion_tokens": 7},
+            )
+        ]
+    )
+
+    _, _, usage = AIEnricher(client, settings()).enrich([news_cluster()], [], mode="full")
+
+    assert usage[0].input_cache_hit_tokens == 0
+    assert usage[0].input_cache_miss_tokens == 19
+    assert usage[0].output_tokens == 7
+    assert usage[0].call_count == 1
+
+
+def test_maps_chat_completion_cached_prompt_detail() -> None:
+    """Would catch conventional cached prompt tokens being charged entirely at cache-miss rates."""
+    client = FixtureClient(
+        [
+            chat_response(
+                fixture_response("ai_news_response.json"),
+                usage={
+                    "prompt_tokens": 23,
+                    "prompt_tokens_details": {"cached_tokens": 11},
+                    "completion_tokens": 3,
+                },
+            )
+        ]
+    )
+
+    _, _, usage = AIEnricher(client, settings()).enrich([news_cluster()], [], mode="full")
+
+    assert usage[0].input_cache_hit_tokens == 11
+    assert usage[0].input_cache_miss_tokens == 12

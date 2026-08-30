@@ -13,6 +13,7 @@ class AppSettings(BaseModel):
     ai_model: str = "deepseek-v4-flash"
     ai_max_output_tokens: int = Field(default=2500, ge=256, le=8192)
     max_news_candidates: int = Field(default=12, ge=1, le=12)
+    min_news_score: float = Field(default=40.0, ge=0, le=100)
     github_top_n: int = Field(default=10, ge=1, le=10)
     github_window_days: int = 7
     snapshot_retention_days: int = 35

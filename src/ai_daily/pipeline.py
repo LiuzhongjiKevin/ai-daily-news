@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import UTC, date, datetime, timedelta, tzinfo
+from datetime import date, datetime, timedelta, tzinfo
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal, Protocol
@@ -15,8 +15,14 @@ from dateutil.tz import gettz
 from pydantic import BaseModel, Field
 
 from ai_daily.ai import AIEnrichmentError
-from ai_daily.collectors.base import CollectorRegistry, SourceConfig
-from ai_daily.collectors.github import discover_candidates, fetch_repo_snapshots
+from ai_daily.collectors.base import CollectorRegistry, SourceConfig, parse_datetime
+from ai_daily.collectors.github import (
+    GitHubDataError,
+    GitHubResponseError,
+    GitHubSnapshotBatch,
+    discover_candidates,
+    fetch_repo_snapshots,
+)
 from ai_daily.config import AppSettings, PricingTable
 from ai_daily.cost import CostReport, calculate_cost
 from ai_daily.github_rank import (
@@ -51,6 +57,7 @@ class RunResult(BaseModel):
     markdown_path: Path | None = None
     warnings: list[str] = Field(default_factory=list)
     estimated_cost: Decimal = Decimal(0)
+    usage: list[UsageRecord] = Field(default_factory=list)
 
 
 class Clock(Protocol):
@@ -76,7 +83,21 @@ Renderer = Callable[[Digest, CostReport, Path], RenderedDigest]
 
 
 class GitHubCollectionError(RuntimeError):
-    """A transport failure prevents obtaining today's GitHub repository snapshot."""
+    """A transport or typed-data failure prevents obtaining today's GitHub snapshot."""
+
+    def __init__(self, message: str, *, warnings: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.warnings = list(warnings or [])
+
+
+class GitHubRankingBatch(list[RankedRepo]):
+    """List-compatible rankings with reader-safe partial metadata warnings."""
+
+    def __init__(
+        self, rankings: list[RankedRepo], *, warnings: list[str] | None = None
+    ) -> None:
+        super().__init__(rankings)
+        self.warnings = list(warnings or [])
 
 
 class NoUsableDigestDataError(RuntimeError):
@@ -133,13 +154,15 @@ class DailyPipeline:
         self, since: datetime | None, now: datetime
     ) -> tuple[list[RawItem], list[str]]:
         """Collect every configured source, leaving individual source errors as registry warnings."""
-        del now
-        cutoff = since or datetime.min.replace(tzinfo=UTC)
+        now_utc = parse_datetime(now)
+        earliest = now_utc - timedelta(hours=36)
+        cutoff = max(parse_datetime(since), earliest) if since is not None else earliest
         return self.collector_registry.collect_all(self.sources, cutoff)
 
-    def collect_and_rank_repositories(self, day: date) -> list[RankedRepo]:
+    def collect_and_rank_repositories(self, day: date) -> GitHubRankingBatch:
         """Rank today's snapshot before atomically persisting it, with no retention side effect."""
         collected_at = self.clock.now(_timezone(self.settings.timezone))
+        collection_failure: GitHubCollectionError | None = None
         try:
             names = self.discover_repositories(
                 self.github_client,
@@ -153,24 +176,33 @@ class DailyPipeline:
                 names,
                 collected_at,
             )
-        except httpx.HTTPError as error:
-            raise GitHubCollectionError("GitHub data is unavailable") from error
+        except (httpx.HTTPError, GitHubDataError, GitHubResponseError):
+            collection_failure = GitHubCollectionError("GitHub data is unavailable")
+        if collection_failure is not None:
+            raise collection_failure
+
+        metadata_warnings = (
+            list(current.warnings) if isinstance(current, GitHubSnapshotBatch) else []
+        )
+        current_snapshots = list(current)
 
         baseline, has_full_baseline, _ = load_recent_snapshots(
             self.state_store, day, self.settings.github_window_days
         )
         fallback = self._retained_snapshots(day)
         ranked = rank_repositories(
-            current,
+            current_snapshots,
             baseline,
             self.settings.github_top_n,
             has_full_baseline=has_full_baseline,
             fallback=fallback,
         )
         if not ranked:
-            raise GitHubCollectionError("GitHub ranking is unavailable")
-        self.state_store.save_snapshot(day, current)
-        return ranked
+            raise GitHubCollectionError(
+                "GitHub ranking is unavailable", warnings=metadata_warnings
+            )
+        self.state_store.save_snapshot(day, current_snapshots)
+        return GitHubRankingBatch(ranked, warnings=metadata_warnings)
 
     def write_outputs(
         self,
@@ -193,7 +225,7 @@ class DailyPipeline:
         state = self.state_store.load_run_state()
         local_now = self.clock.now(_timezone(self.settings.timezone))
         local_date = local_now.date().isoformat()
-        if local_date in state.sent_dates and not options.force:
+        if options.send and local_date in state.sent_dates and not options.force:
             return RunResult(
                 local_date=local_date,
                 sent=False,
@@ -202,10 +234,18 @@ class DailyPipeline:
             )
 
         raw_items, warnings = self.collect_news(state.last_success_at, local_now)
-        candidates = prepare_news(raw_items, self.settings.max_news_candidates)
+        candidates = prepare_news(
+            raw_items,
+            self.settings.max_news_candidates,
+            min_score=self.settings.min_news_score,
+            now=local_now,
+        )
         try:
-            ranked_repos = self.collect_and_rank_repositories(local_now.date())
-        except GitHubCollectionError:
+            ranking_batch = self.collect_and_rank_repositories(local_now.date())
+            ranked_repos = list(ranking_batch)
+            warnings.extend(ranking_batch.warnings)
+        except GitHubCollectionError as error:
+            warnings.extend(error.warnings)
             ranked_repos, cached_day = self._load_cached_rankings(local_now.date())
             if cached_day is None:
                 warnings.append("GitHub data unavailable; no cached snapshot used")
@@ -218,10 +258,12 @@ class DailyPipeline:
         mode = options.ai_mode or self.settings.ai_mode
         try:
             news, repositories, usage = self.enricher.enrich(candidates, ranked_repos, mode)
-        except AIEnrichmentError:
+        except AIEnrichmentError as error:
             warnings.append("AI enrichment failed; deterministic fallback used")
-            news, repositories, _ = self.off_enricher.enrich(candidates, ranked_repos, "off")
-            usage = []
+            news, repositories, fallback_usage = self.off_enricher.enrich(
+                candidates, ranked_repos, "off"
+            )
+            usage = [*error.usage, *fallback_usage]
 
         cost = calculate_cost(usage, self.prices)
         digest = Digest(
@@ -250,6 +292,7 @@ class DailyPipeline:
             markdown_path=paths.markdown,
             warnings=warnings,
             estimated_cost=cost.total,
+            usage=usage,
         )
 
     def _retained_snapshots(self, today: date) -> list[RepoSnapshot]:
@@ -309,6 +352,7 @@ class DailyPipeline:
                 {
                     "stage": record.stage,
                     "model": record.model,
+                    "call_count": record.call_count,
                     "input_cache_hit_tokens": record.input_cache_hit_tokens,
                     "input_cache_miss_tokens": record.input_cache_miss_tokens,
                     "output_tokens": record.output_tokens,

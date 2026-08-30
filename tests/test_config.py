@@ -12,6 +12,7 @@ def test_loads_required_defaults(tmp_path: Path) -> None:
         "ai_model: deepseek-v4-flash\n"
         "ai_max_output_tokens: 2500\n"
         "max_news_candidates: 12\n"
+        "min_news_score: 40\n"
         "github_top_n: 10\n"
         "github_window_days: 7\n"
         "snapshot_retention_days: 35\n",
@@ -33,5 +34,6 @@ def test_loads_required_defaults(tmp_path: Path) -> None:
 
     assert settings.timezone == "Asia/Shanghai"
     assert settings.max_news_candidates == 12
+    assert settings.min_news_score == 40
     assert settings.github_window_days == 7
     assert prices.models["deepseek-v4-flash"].output == 1.32

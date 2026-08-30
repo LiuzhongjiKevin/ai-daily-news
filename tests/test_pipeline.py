@@ -1,12 +1,13 @@
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
 import httpx
 import pytest
 
-from ai_daily.ai import AIEnrichmentError
+from ai_daily.ai import AIEnrichmentError, OffEnricher
+from ai_daily.collectors import github
 from ai_daily.config import AppSettings, ModelPrice, PricingTable
 from ai_daily.mail import MailSendError
 from ai_daily.models import NewsCluster, RankedRepo, RawItem, RepoSnapshot, RunState, UsageRecord
@@ -196,7 +197,7 @@ def test_pipeline_generates_archives_sends_and_marks_beijing_date(tmp_path: Path
     assert result.sent is True
     assert result.markdown_path == tmp_path / "output" / "digests" / "2026-08-24.md"
     assert store.load_run_state().sent_dates["2026-08-24"] == "accepted-fingerprint"
-    assert registry.since == datetime.min.replace(tzinfo=UTC)
+    assert registry.since == NOW - timedelta(hours=36)
     assert result.estimated_cost == Decimal("0.000010")
 
 
@@ -220,10 +221,33 @@ def test_already_sent_date_is_a_true_no_op(tmp_path: Path) -> None:
         "markdown_path": None,
         "warnings": [],
         "estimated_cost": Decimal(0),
+        "usage": [],
     }
     assert registry.calls == 0
     assert mailer.calls == 0
     assert not (tmp_path / "output").exists()
+
+
+def test_same_day_preview_still_generates_after_a_sent_marker(tmp_path: Path) -> None:
+    """Would catch duplicate-send protection suppressing a same-day no-send preview."""
+    from ai_daily.pipeline import RunOptions
+
+    store = StateStore(tmp_path / "data")
+    store.save_run_state(RunState(sent_dates={"2026-08-24": "prior-acceptance"}))
+    registry = FixedRegistry([item()])
+    mailer = RecordingMailer()
+
+    result = make_pipeline(
+        tmp_path, registry=registry, store=store, mailer=mailer
+    ).run(RunOptions(send=False))
+
+    assert result.already_sent is False
+    assert result.sent is False
+    assert result.message_id is None
+    assert result.markdown_path and result.markdown_path.exists()
+    assert registry.calls == 1
+    assert mailer.calls == 0
+    assert store.load_run_state().sent_dates == {"2026-08-24": "prior-acceptance"}
 
 
 def test_force_resends_and_replaces_marker_only_after_new_acceptance(tmp_path: Path) -> None:
@@ -269,6 +293,26 @@ def test_source_failure_warning_does_not_block_usable_news_and_github(tmp_path: 
     assert result.warnings == ["broken-source: HTTP 503"]
 
 
+def test_pipeline_applies_configured_news_score_threshold(tmp_path: Path) -> None:
+    """Would catch low-value rule candidates bypassing the configured application threshold."""
+    from ai_daily.pipeline import RunOptions
+
+    routine = item().model_copy(
+        update={
+            "source_type": "media",
+            "title": "Weekly AI industry roundup",
+            "canonical_url": "https://media.test/roundup",
+            "category": "industry",
+        }
+    )
+
+    result = make_pipeline(tmp_path, registry=FixedRegistry([routine])).run(RunOptions())
+
+    archive = result.markdown_path.read_text("utf-8") if result.markdown_path else ""
+    assert "Weekly AI industry roundup" not in archive
+    assert "今日无重大 AI 官方动态" in archive
+
+
 def test_all_news_source_failures_can_still_preview_github(tmp_path: Path) -> None:
     """Would catch a total news outage suppressing a usable repository ranking."""
     from ai_daily.pipeline import RunOptions
@@ -282,17 +326,30 @@ def test_all_news_source_failures_can_still_preview_github(tmp_path: Path) -> No
     assert result.warnings == ["one: TimeoutException", "two: HTTP 503"]
 
 
-def test_ai_enrichment_error_uses_exact_off_mode_warning_and_zero_usage(tmp_path: Path) -> None:
-    """Would catch a model failure becoming fatal or retaining paid usage from failed enrichment."""
+def test_ai_enrichment_error_falls_back_but_preserves_paid_usage_and_cost(tmp_path: Path) -> None:
+    """Would catch deterministic fallback replacing actual paid failure usage with zero."""
     from ai_daily.pipeline import RunOptions
 
-    failing = FailingEnricher(AIEnrichmentError("bad model JSON"))
-    result = make_pipeline(tmp_path, enricher=failing, off_enricher=Enricher()).run(RunOptions())
+    failed_usage = [
+        UsageRecord(stage="news", model="test-model", call_count=2, output_tokens=10)
+    ]
+    failing = FailingEnricher(AIEnrichmentError("bad model JSON", usage=failed_usage))
+    result = make_pipeline(tmp_path, enricher=failing, off_enricher=OffEnricher()).run(RunOptions())
 
     assert result.warnings == ["AI enrichment failed; deterministic fallback used"]
-    assert result.estimated_cost == Decimal("0.000000")
+    assert result.estimated_cost == Decimal("0.000010")
+    assert result.usage == failed_usage
     report = json.loads((tmp_path / "output" / "preview" / "cost-report.json").read_text("utf-8"))
-    assert report["usage"] == []
+    assert report["usage"] == [
+        {
+            "stage": "news",
+            "model": "test-model",
+            "call_count": 2,
+            "input_cache_hit_tokens": 0,
+            "input_cache_miss_tokens": 0,
+            "output_tokens": 10,
+        }
+    ]
     assert failing.calls == 1
 
 
@@ -313,6 +370,61 @@ def test_github_transport_failure_uses_newest_cached_snapshot_and_exposes_date(t
     assert result.warnings == ["GitHub data unavailable; using cached snapshot from 2026-08-23"]
     assert result.markdown_path and "owner/repo" in result.markdown_path.read_text("utf-8")
     assert "2026-08-23" in result.markdown_path.read_text("utf-8")
+
+
+def test_malformed_github_search_data_uses_cached_snapshot(tmp_path: Path) -> None:
+    """Would catch typed Search data failures escaping instead of using the existing cache path."""
+    from ai_daily.pipeline import RunOptions
+
+    store = StateStore(tmp_path / "data")
+    store.save_snapshot(date(2026, 8, 23), [snapshot()])
+
+    def malformed(*_: object) -> list[str]:
+        raise github.GitHubDataError("GitHub search data is invalid")
+
+    result = make_pipeline(tmp_path, store=store, discover=malformed).run(RunOptions())
+
+    assert result.warnings == [
+        "GitHub data unavailable; using cached snapshot from 2026-08-23"
+    ]
+
+
+def test_partial_github_metadata_warning_reaches_digest_while_usable_rows_continue(
+    tmp_path: Path,
+) -> None:
+    """Would catch repository-level degradation being hidden from the reader and pipeline result."""
+    from ai_daily.pipeline import RunOptions
+
+    warning = "GitHub metadata partial: 1/2 repositories unavailable (data=1)"
+    result = make_pipeline(
+        tmp_path,
+        fetch=lambda *_: github.GitHubSnapshotBatch([snapshot()], warnings=[warning]),
+    ).run(RunOptions())
+
+    assert result.warnings == [warning]
+    archive = result.markdown_path.read_text("utf-8") if result.markdown_path else ""
+    assert "GitHub metadata partial: 1/2 repositories unavailable" in archive
+    assert "data=1" in archive
+
+
+def test_all_bad_github_metadata_preserves_warning_and_uses_cache(tmp_path: Path) -> None:
+    """Would catch total per-repository failure losing diagnostics or skipping cached fallback."""
+    from ai_daily.pipeline import RunOptions
+
+    store = StateStore(tmp_path / "data")
+    store.save_snapshot(date(2026, 8, 23), [snapshot()])
+    warning = "GitHub metadata partial: 2/2 repositories unavailable (http_404=1, transport=1)"
+
+    result = make_pipeline(
+        tmp_path,
+        store=store,
+        fetch=lambda *_: github.GitHubSnapshotBatch([], warnings=[warning]),
+    ).run(RunOptions())
+
+    assert result.warnings == [
+        warning,
+        "GitHub data unavailable; using cached snapshot from 2026-08-23",
+    ]
 
 
 def test_empty_current_github_ranking_uses_older_cache_even_without_news(tmp_path: Path) -> None:
@@ -501,6 +613,7 @@ def test_output_paths_are_atomic_and_cost_report_contains_only_safe_allowlisted_
     assert set(report["usage"][0]) == {
         "stage",
         "model",
+        "call_count",
         "input_cache_hit_tokens",
         "input_cache_miss_tokens",
         "output_tokens",
@@ -538,3 +651,42 @@ def test_last_success_time_is_the_next_collection_cutoff(tmp_path: Path) -> None
     make_pipeline(tmp_path, registry=registry, store=store).run(RunOptions())
 
     assert registry.since == previous
+
+
+@pytest.mark.parametrize(
+    ("last_success", "now", "expected"),
+    [
+        (None, NOW, NOW - timedelta(hours=36)),
+        (NOW - timedelta(hours=48), NOW, NOW - timedelta(hours=36)),
+        (NOW - timedelta(hours=5), NOW, NOW - timedelta(hours=5)),
+        (
+            datetime(2026, 8, 24, 1, 30, tzinfo=timezone(timedelta(hours=8))),
+            NOW,
+            datetime(2026, 8, 23, 17, 30, tzinfo=UTC),
+        ),
+        (
+            datetime(2026, 8, 23, 13, 30),  # noqa: DTZ001 - exercises naïve input normalization
+            NOW,
+            datetime(2026, 8, 23, 13, 30, tzinfo=UTC),
+        ),
+        (
+            None,
+            datetime(2026, 8, 23, 18, 30),  # noqa: DTZ001 - exercises naïve input normalization
+            NOW - timedelta(hours=36),
+        ),
+    ],
+)
+def test_news_collection_cutoff_is_bounded_and_normalized_to_utc(
+    tmp_path: Path,
+    last_success: datetime | None,
+    now: datetime,
+    expected: datetime,
+) -> None:
+    """Would catch first/stale runs escaping the 36-hour window or naïve times staying naïve."""
+    registry = FixedRegistry([item()])
+    pipeline = make_pipeline(tmp_path, registry=registry)
+
+    pipeline.collect_news(last_success, now)
+
+    assert registry.since == expected
+    assert registry.since.tzinfo is UTC

@@ -4,6 +4,9 @@ ai_base_url: https://api.deepseek.com
 ai_model: deepseek-v4-flash
 ai_max_output_tokens: 2500
 max_news_candidates: 12
+# 40 keeps every official event (minimum 45) while excluding routine single-media
+# items (maximum 35 in the uncategorized bucket) before the 12-item cap.
+min_news_score: 40
 github_top_n: 10
 github_window_days: 7
 snapshot_retention_days: 35

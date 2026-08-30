@@ -49,6 +49,13 @@ def test_calculates_current_model_cost_per_million_tokens_and_stage_totals() -> 
     assert report.thirty_day_projection == Decimal("30.120000")
 
 
+def test_usage_record_defaults_to_one_call_for_backward_compatibility() -> None:
+    """Would catch legacy usage records losing their single-call meaning after schema extension."""
+    record = UsageRecord(stage="news", model="deepseek-v4-flash")
+
+    assert record.call_count == 1
+
+
 def test_quantizes_totals_to_six_decimal_places() -> None:
     """Would catch sub-microdollar token prices being rounded inconsistently."""
     report = calculate_cost(
