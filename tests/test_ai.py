@@ -725,6 +725,104 @@ def test_responses_usage_rejects_malformed_input_detail_container() -> None:
     assert secret_details[0] not in rendered
 
 
+@pytest.mark.parametrize(
+    ("response_style", "detail_field", "malformed_details"),
+    [
+        ("chat", "prompt_tokens_details", "detail-sk-secret-chat-string"),
+        ("chat", "prompt_tokens_details", ["detail-sk-secret-chat-list"]),
+        ("chat", "prompt_tokens_details", True),
+        ("chat", "prompt_tokens_details", 17),
+        ("responses", "input_tokens_details", "detail-sk-secret-responses-string"),
+        ("responses", "input_tokens_details", ["detail-sk-secret-responses-list"]),
+        ("responses", "input_tokens_details", True),
+        ("responses", "input_tokens_details", 17),
+    ],
+)
+@pytest.mark.parametrize("top_level_hit", [0, 4])
+def test_top_level_cache_hit_does_not_bypass_malformed_detail_validation(
+    response_style: str,
+    detail_field: str,
+    malformed_details: object,
+    top_level_hit: int,
+) -> None:
+    """Would catch cache-hit precedence skipping validation of a present detail container."""
+    usage: dict[str, object] = {
+        "prompt_cache_hit_tokens": top_level_hit,
+        detail_field: malformed_details,
+    }
+    if response_style == "chat":
+        usage.update({"prompt_tokens": 19, "completion_tokens": 7})
+        response = chat_response(fixture_response("ai_news_response.json"), usage=usage)
+    else:
+        usage.update({"input_tokens": 19, "output_tokens": 7})
+        response = {
+            "output_text": fixture_response("ai_news_response.json"),
+            "usage": usage,
+        }
+    client = FixtureClient([response])
+
+    with pytest.raises(AIEnrichmentError, match="usage data is invalid") as error:
+        AIEnricher(client, settings()).enrich([news_cluster()], [], mode="full")
+
+    record = error.value.usage[0]
+    assert record.call_count == 1
+    assert record.input_cache_hit_tokens == top_level_hit
+    assert record.input_cache_miss_tokens == 19 - top_level_hit
+    assert record.output_tokens == 7
+    assert record.is_complete is False
+    rendered = "".join(traceback.format_exception(error.value))
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert "detail-sk-secret" not in str(error.value)
+    assert "detail-sk-secret" not in rendered
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"cached_tokens": 4},
+        SimpleNamespace(cached_tokens=4),
+    ],
+    ids=["mapping", "sdk-object"],
+)
+@pytest.mark.parametrize(
+    ("response_style", "detail_field"),
+    [
+        ("chat", "prompt_tokens_details"),
+        ("responses", "input_tokens_details"),
+    ],
+)
+def test_top_level_cache_hit_preserves_valid_present_detail_objects(
+    details: object, response_style: str, detail_field: str
+) -> None:
+    """Would catch independent detail validation rejecting supported object shapes."""
+    usage_payload: dict[str, object] = {
+        "prompt_cache_hit_tokens": 4,
+        detail_field: details,
+    }
+    if response_style == "chat":
+        usage_payload.update({"prompt_tokens": 19, "completion_tokens": 7})
+        response = chat_response(
+            fixture_response("ai_news_response.json"), usage=usage_payload
+        )
+    else:
+        usage_payload.update({"input_tokens": 19, "output_tokens": 7})
+        response = {
+            "output_text": fixture_response("ai_news_response.json"),
+            "usage": usage_payload,
+        }
+    client = FixtureClient([response])
+
+    _, _, usage = AIEnricher(client, settings()).enrich(
+        [news_cluster()], [], mode="full"
+    )
+
+    assert usage[0].input_cache_hit_tokens == 4
+    assert usage[0].input_cache_miss_tokens == 15
+    assert usage[0].output_tokens == 7
+    assert usage[0].is_complete is True
+
+
 def test_successful_news_usage_survives_malformed_github_detail_container() -> None:
     """Would catch a later detail-shape failure erasing known news usage or GitHub call count."""
     secret_details = ["github-detail-sk-secret"]
@@ -737,6 +835,7 @@ def test_successful_news_usage_survives_malformed_github_detail_container() -> N
             chat_response(
                 fixture_response("ai_repos_response.json"),
                 usage={
+                    "prompt_cache_hit_tokens": 0,
                     "prompt_tokens": 23,
                     "prompt_tokens_details": secret_details,
                     "completion_tokens": 7,

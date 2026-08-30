@@ -363,6 +363,7 @@ def test_ai_enrichment_error_falls_back_but_preserves_paid_usage_and_cost(tmp_pa
             "completion_tokens": 7,
         },
         {
+            "prompt_cache_hit_tokens": 0,
             "prompt_tokens": 23,
             "prompt_tokens_details": ["usage-sk-secret-must-not-survive"],
             "completion_tokens": 7,

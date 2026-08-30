@@ -114,18 +114,26 @@ def _usage_record(stage: str, model: str, response: object) -> UsageRecord:
     if usage is _MISSING or usage is None or usage is _INVALID:
         return UsageRecord(stage=stage, model=model, is_complete=False)
 
+    prompt_detail_hit = _nested_token_field(
+        usage, "prompt_tokens_details", "cached_tokens"
+    )
+    input_detail_hit = _nested_token_field(
+        usage, "input_tokens_details", "cached_tokens"
+    )
+    detail_invalid = prompt_detail_hit is _INVALID or input_detail_hit is _INVALID
+
     hit_value = _token_field(usage, "prompt_cache_hit_tokens")
     if hit_value is _MISSING:
-        hit_value = _nested_token_field(usage, "prompt_tokens_details", "cached_tokens")
+        hit_value = prompt_detail_hit
     if hit_value is _MISSING:
-        hit_value = _nested_token_field(usage, "input_tokens_details", "cached_tokens")
+        hit_value = input_detail_hit
     hit_invalid = hit_value is _INVALID
     hit = int(hit_value) if isinstance(hit_value, int) else 0
 
     miss_value = _token_field(usage, "prompt_cache_miss_tokens")
     input_known = False
     miss = 0
-    malformed = hit_invalid or miss_value is _INVALID
+    malformed = detail_invalid or hit_invalid or miss_value is _INVALID
     if isinstance(miss_value, int):
         miss = miss_value
         input_known = True
