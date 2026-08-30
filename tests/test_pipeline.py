@@ -355,8 +355,23 @@ def test_ai_enrichment_error_falls_back_but_preserves_paid_usage_and_cost(tmp_pa
     assert failing.calls == 1
 
 
+@pytest.mark.parametrize(
+    "github_usage",
+    [
+        {
+            "prompt_tokens": "usage-sk-secret-must-not-survive",
+            "completion_tokens": 7,
+        },
+        {
+            "prompt_tokens": 23,
+            "prompt_tokens_details": ["usage-sk-secret-must-not-survive"],
+            "completion_tokens": 7,
+        },
+    ],
+    ids=["malformed-token", "malformed-detail-container"],
+)
 def test_malformed_github_usage_falls_back_with_known_lower_bound_and_no_secret(
-    tmp_path: Path,
+    tmp_path: Path, github_usage: dict[str, object]
 ) -> None:
     """Would catch later malformed usage losing calls, known cost, or deterministic fallback."""
     from ai_daily.pipeline import RunOptions
@@ -400,10 +415,7 @@ def test_malformed_github_usage_falls_back_with_known_lower_bound_and_no_secret(
                     },
                     ensure_ascii=False,
                 )
-                usage = {
-                    "prompt_tokens": secret_usage,
-                    "completion_tokens": 7,
-                }
+                usage = github_usage
             return {"choices": [{"message": {"content": content}}], "usage": usage}
 
     enricher = AIEnricher(

@@ -1,7 +1,7 @@
 import json
 import re
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
 from ai_daily.config import AppSettings
@@ -69,7 +69,7 @@ def _response_content(response: object) -> str:
 
 def _safe_field(source: object, name: str) -> object:
     try:
-        if isinstance(source, dict):
+        if isinstance(source, Mapping):
             return source.get(name, _MISSING)
         return getattr(source, name, _MISSING)
     except Exception:  # noqa: BLE001 - provider objects may raise from attribute access.
@@ -96,9 +96,15 @@ def _token_field(source: object, name: str) -> object:
 
 def _nested_token_field(source: object, container_name: str, field_name: str) -> object:
     container = _safe_field(source, container_name)
-    if container is _MISSING or container is None:
+    if container is _MISSING:
         return _MISSING
     if container is _INVALID:
+        return _INVALID
+    try:
+        is_object = isinstance(container, Mapping) or hasattr(container, "__dict__")
+    except Exception:  # noqa: BLE001 - provider objects may raise during shape inspection.
+        return _INVALID
+    if not is_object:
         return _INVALID
     return _token_field(container, field_name)
 

@@ -657,6 +657,112 @@ def test_hostile_usage_scalar_cannot_raise_or_leak_during_conversion() -> None:
     assert secret_usage not in "".join(traceback.format_exception(error.value))
 
 
+@pytest.mark.parametrize(
+    "malformed_details",
+    [
+        "detail-sk-secret-string",
+        ["detail-sk-secret-list"],
+        True,
+        17,
+    ],
+    ids=["string", "list", "bool", "number"],
+)
+def test_chat_usage_rejects_malformed_prompt_detail_containers(
+    malformed_details: object,
+) -> None:
+    """Would catch a present non-object Chat usage detail being treated as absent."""
+    client = FixtureClient(
+        [
+            chat_response(
+                fixture_response("ai_news_response.json"),
+                usage={
+                    "prompt_tokens": 19,
+                    "prompt_tokens_details": malformed_details,
+                    "completion_tokens": 7,
+                },
+            )
+        ]
+    )
+
+    with pytest.raises(AIEnrichmentError, match="usage data is invalid") as error:
+        AIEnricher(client, settings()).enrich([news_cluster()], [], mode="full")
+
+    assert error.value.usage[0].call_count == 1
+    assert error.value.usage[0].output_tokens == 7
+    assert error.value.usage[0].is_complete is False
+    rendered = "".join(traceback.format_exception(error.value))
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert "detail-sk-secret" not in str(error.value)
+    assert "detail-sk-secret" not in rendered
+
+
+def test_responses_usage_rejects_malformed_input_detail_container() -> None:
+    """Would catch a present non-object Responses usage detail being treated as absent."""
+    secret_details = ["responses-detail-sk-secret"]
+    client = FixtureClient(
+        [
+            {
+                "output_text": fixture_response("ai_news_response.json"),
+                "usage": {
+                    "input_tokens": 9,
+                    "input_tokens_details": secret_details,
+                    "output_tokens": 3,
+                },
+            }
+        ]
+    )
+
+    with pytest.raises(AIEnrichmentError, match="usage data is invalid") as error:
+        AIEnricher(client, settings()).enrich([news_cluster()], [], mode="economy")
+
+    assert error.value.usage[0].call_count == 1
+    assert error.value.usage[0].output_tokens == 3
+    assert error.value.usage[0].is_complete is False
+    rendered = "".join(traceback.format_exception(error.value))
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert secret_details[0] not in rendered
+
+
+def test_successful_news_usage_survives_malformed_github_detail_container() -> None:
+    """Would catch a later detail-shape failure erasing known news usage or GitHub call count."""
+    secret_details = ["github-detail-sk-secret"]
+    client = FixtureClient(
+        [
+            chat_response(
+                fixture_response("ai_news_response.json"),
+                usage={"prompt_tokens": 17, "completion_tokens": 5},
+            ),
+            chat_response(
+                fixture_response("ai_repos_response.json"),
+                usage={
+                    "prompt_tokens": 23,
+                    "prompt_tokens_details": secret_details,
+                    "completion_tokens": 7,
+                },
+            ),
+        ]
+    )
+
+    with pytest.raises(AIEnrichmentError, match="usage data is invalid") as error:
+        AIEnricher(client, settings()).enrich(
+            [news_cluster()], [ranked_repo()], mode="full"
+        )
+
+    assert [
+        (record.stage, record.call_count, record.output_tokens, record.is_complete)
+        for record in error.value.usage
+    ] == [
+        ("news", 1, 5, True),
+        ("github", 1, 7, False),
+    ]
+    rendered = "".join(traceback.format_exception(error.value))
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert secret_details[0] not in rendered
+
+
 def test_maps_responses_style_usage_fields() -> None:
     """Would catch Responses API cached tokens being omitted from cost accounting."""
     client = FixtureClient(
@@ -680,6 +786,27 @@ def test_maps_responses_style_usage_fields() -> None:
     assert usage[0].output_tokens == 3
 
 
+def test_responses_usage_without_optional_details_remains_complete() -> None:
+    """Would catch a truly absent optional Responses detail being marked malformed."""
+    client = FixtureClient(
+        [
+            {
+                "output_text": fixture_response("ai_news_response.json"),
+                "usage": {"input_tokens": 9, "output_tokens": 3},
+            }
+        ]
+    )
+
+    _, _, usage = AIEnricher(client, settings()).enrich(
+        [news_cluster()], [], mode="economy"
+    )
+
+    assert usage[0].input_cache_hit_tokens == 0
+    assert usage[0].input_cache_miss_tokens == 9
+    assert usage[0].output_tokens == 3
+    assert usage[0].is_complete is True
+
+
 def test_maps_conventional_chat_completion_prompt_tokens_as_cache_miss() -> None:
     """Would catch billable prompt tokens being reported as free when cache detail is absent."""
     client = FixtureClient(
@@ -697,6 +824,7 @@ def test_maps_conventional_chat_completion_prompt_tokens_as_cache_miss() -> None
     assert usage[0].input_cache_miss_tokens == 19
     assert usage[0].output_tokens == 7
     assert usage[0].call_count == 1
+    assert usage[0].is_complete is True
 
 
 def test_maps_chat_completion_cached_prompt_detail() -> None:
