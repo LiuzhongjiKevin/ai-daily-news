@@ -1,0 +1,27 @@
+name: Validate AI Daily Sources
+
+on:
+  workflow_dispatch:
+    inputs:
+      minimum_success:
+        description: Minimum successful enabled sources (percent)
+        type: number
+        default: 80
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --requirement requirements-prod.lock
+      - run: python -m pip install --no-deps --no-build-isolation -e .
+      - name: Validate enabled sources
+        run: ai-daily validate-sources --minimum-success "${{ inputs.minimum_success }}"

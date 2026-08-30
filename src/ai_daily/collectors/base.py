@@ -1,3 +1,5 @@
+from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol
@@ -53,6 +55,21 @@ class SourceConfig(BaseModel):
 
 class Collector(Protocol):
     def collect(self, source: SourceConfig, since: datetime) -> list[RawItem]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class SourceCollectionBatch:
+    """Collected content plus source-boundary outcomes, without parsing warning text."""
+
+    items: list[RawItem]
+    warnings: list[str]
+    source_successes: int
+    source_total: int
+
+    def __iter__(self) -> Iterator[list[RawItem] | list[str]]:
+        # Preserve the existing two-value unpacking contract for internal callers.
+        yield self.items
+        yield self.warnings
 
 
 def load_sources(path: Path) -> list[SourceConfig]:
@@ -122,12 +139,19 @@ class CollectorRegistry:
 
     def collect_all(
         self, sources: list[SourceConfig], since: datetime
-    ) -> tuple[list[RawItem], list[str]]:
+    ) -> SourceCollectionBatch:
         items: list[RawItem] = []
         warnings: list[str] = []
+        source_successes = 0
         for source in sources:
             try:
                 items.extend(self.collectors[source.kind].collect(source, since))
+                source_successes += 1
             except Exception as exc:  # noqa: BLE001 - isolate every source failure at this boundary
                 warnings.append(f"{source.id}: {format_source_failure(source, exc)}")
-        return items, warnings
+        return SourceCollectionBatch(
+            items=items,
+            warnings=warnings,
+            source_successes=source_successes,
+            source_total=len(sources),
+        )

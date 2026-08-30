@@ -16,15 +16,36 @@ class FakeResult:
     markdown_path: Path | None = Path("digests/2026-08-24.md")
     warnings: list[str] | None = None
     estimated_cost: Decimal = Decimal(0)
+    delivery_outcome: str = "not_attempted"
+    source_successes: int = 0
+    source_total: int = 0
+    source_success_rate: float | None = None
+    news_candidate_count: int = 0
+    final_news_count: int = 0
+    repository_count: int = 0
+    github_status: str = "not_run"
+    github_data_date: str | None = None
+    effective_ai_mode: str | None = None
+    ai_call_count: int = 0
+    token_usage_complete: bool = True
+    cost_is_lower_bound: bool = False
+    input_cache_hit_tokens: int = 0
+    input_cache_miss_tokens: int = 0
+    output_tokens: int = 0
+    cost_currency: str = "USD"
+    thirty_day_projection: Decimal = Decimal(0)
 
 
 class FakePipeline:
     def __init__(self, result: FakeResult | None = None) -> None:
         self.result = result or FakeResult()
         self.last_options = None
+        self.delivery_outcome = "not_attempted"
+        self.last_result = self.result
 
     def run(self, options: object) -> FakeResult:
         self.last_options = options
+        self.delivery_outcome = self.result.delivery_outcome
         return self.result
 
 
@@ -79,17 +100,33 @@ def test_validate_sources_threshold_writes_redacted_markdown_summary(
     from ai_daily.cli import main
 
     summary = tmp_path / "summary.md"
+    secret = "source-validation-secret"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", secret)
     monkeypatch.setattr(
         "ai_daily.cli.validate_sources",
-        lambda: [("official", None), ("private", "HTTP 503 url=https://x.test?<redacted>")],
+        lambda: [
+            ("official", None),
+            (
+                "private-reader@example.test",
+                (
+                    "HTTP 503 url=https://x.test?<redacted> "
+                    f"reader@example.test access_token=oauth-value {secret}"
+                ),
+            ),
+        ],
     )
 
     assert main(["validate-sources", "--minimum-success", "50"]) == 0
     output = capsys.readouterr().out
     assert "1/2" in output
-    assert "private" in summary.read_text(encoding="utf-8")
-    assert "<redacted>" in summary.read_text(encoding="utf-8")
+    assert "<redacted-email>" in summary.read_text(encoding="utf-8")
+    assert "reader@example.test" not in output
+    summary_text = summary.read_text(encoding="utf-8")
+    assert "<redacted>" in summary_text
+    assert secret not in summary_text
+    assert "reader@example.test" not in summary_text
+    assert "oauth-value" not in summary_text
     assert main(["validate-sources", "--minimum-success", "80"]) == 1
 
 
@@ -173,3 +210,210 @@ def test_noneditable_installation_fails_early_with_checkout_guidance(
     assert "python -m pip install -e ." in output
     assert "site-packages" not in output
     assert str(tmp_path) not in output
+
+
+def test_send_attempt_id_is_forwarded_to_the_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Would catch a workflow reservation owner being dropped before delivery."""
+    from ai_daily.cli import main
+
+    pipeline = FakePipeline(FakeResult(sent=True, message_id="accepted-safe-id"))
+    monkeypatch.setattr("ai_daily.cli.build_pipeline", lambda: pipeline)
+    monkeypatch.setattr("ai_daily.cli.required_send_secret_names", lambda mode: ())
+
+    assert main(["run", "--send", "--ai-mode", "off", "--attempt-id", "gh-100-1"]) == 0
+    assert pipeline.last_options.attempt_id == "gh-100-1"
+
+
+def test_reserve_and_resolve_commands_change_only_safe_local_delivery_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Would catch operator commands requiring network services or printing ownership values."""
+    from ai_daily import cli
+    from ai_daily.state import StateStore
+
+    monkeypatch.setattr(cli, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(cli, "_current_local_time", lambda: cli.datetime(2026, 8, 24, tzinfo=cli.UTC))
+    output = tmp_path / "github-output.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+
+    assert cli.main(["reserve-delivery", "--attempt-id", "gh-100-1"]) == 0
+    assert "reservation_status=reserved" in output.read_text("utf-8")
+    assert "gh-100-1" not in capsys.readouterr().out
+    state = StateStore(tmp_path / "data").load_run_state()
+    assert state.delivery_intents["2026-08-24"].attempt_id == "gh-100-1"
+
+    state.delivery_intents["2026-08-24"].status = "ambiguous"
+    StateStore(tmp_path / "data").save_run_state(state)
+    assert cli.main(["resolve-delivery", "retry", "--date", "2026-08-24"]) == 0
+    assert StateStore(tmp_path / "data").load_run_state().delivery_intents == {}
+
+
+def test_resolution_rejects_unsafe_inputs_without_echoing_them(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Would catch validation errors leaking a full address or secret-like message fingerprint."""
+    from ai_daily import cli
+
+    unsafe = "reader@example.test"
+    monkeypatch.setattr(cli, "project_root", lambda: tmp_path)
+
+    assert cli.main(["reserve-delivery", "--attempt-id", unsafe]) == 2
+    assert unsafe not in capsys.readouterr().err
+    assert (
+        cli.main(
+            [
+                "resolve-delivery",
+                "sent",
+                "--date",
+                "2026-08-24",
+                "--message-id",
+                unsafe,
+            ]
+        )
+        == 2
+    )
+    assert unsafe not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("result", "failure", "expected_code", "expected_outcome"),
+    [
+        (FakeResult(sent=True, delivery_outcome="accepted"), None, 0, "accepted"),
+        (None, "pre-mail", 1, "not_attempted"),
+        (None, "mail", 1, "ambiguous"),
+    ],
+)
+def test_run_writes_delivery_outcome_after_controlled_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    result: FakeResult | None,
+    failure: str | None,
+    expected_code: int,
+    expected_outcome: str,
+) -> None:
+    """Would catch failure cleanup guessing from stale or prematurely written runner output."""
+    from ai_daily.cli import main
+    from ai_daily.mail import MailSendError
+    from ai_daily.pipeline import NoUsableDigestDataError
+
+    class OutcomePipeline(FakePipeline):
+        def run(self, options: object) -> FakeResult:
+            self.last_options = options
+            if failure == "pre-mail":
+                self.delivery_outcome = "not_attempted"
+                raise NoUsableDigestDataError("safe failure")
+            if failure == "mail":
+                self.delivery_outcome = "ambiguous"
+                raise MailSendError("safe failure")
+            assert result is not None
+            self.delivery_outcome = result.delivery_outcome
+            self.last_result = result
+            return result
+
+    output = tmp_path / "github-output.txt"
+    pipeline = OutcomePipeline(result)
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setattr("ai_daily.cli.build_pipeline", lambda: pipeline)
+    monkeypatch.setattr("ai_daily.cli.required_send_secret_names", lambda mode: ())
+
+    assert main(["run", "--send", "--ai-mode", "off"]) == expected_code
+    assert output.read_text("utf-8").splitlines() == [
+        f"delivery_outcome={expected_outcome}"
+    ]
+
+
+def test_run_appends_complete_sanitized_github_summary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Would catch required daily metrics being absent or secret-bearing warnings entering Summary."""
+    from ai_daily.cli import main
+
+    secret = "configured-secret-value"
+    result = FakeResult(
+        source_successes=7,
+        source_total=8,
+        source_success_rate=87.5,
+        news_candidate_count=6,
+        final_news_count=4,
+        repository_count=10,
+        github_status="cached",
+        github_data_date="2026-08-23",
+        effective_ai_mode="off",
+        ai_call_count=2,
+        token_usage_complete=False,
+        cost_is_lower_bound=True,
+        input_cache_hit_tokens=11,
+        input_cache_miss_tokens=22,
+        output_tokens=33,
+        estimated_cost=Decimal("0.001234"),
+        thirty_day_projection=Decimal("0.037020"),
+        delivery_outcome="ambiguous",
+        warnings=[
+            (
+                f"reader@example.test access_token=oauth-value client_id=public-client "
+                f"id_token=id-value {secret}"
+            ),
+            "safe degraded warning",
+        ],
+    )
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", secret)
+    monkeypatch.setattr("ai_daily.cli.build_pipeline", lambda: FakePipeline(result))
+
+    assert main(["preview", "--ai-mode", "off"]) == 0
+    content = summary.read_text("utf-8")
+    for phrase in (
+        "7/8 (87.5%)",
+        "Candidates | 6",
+        "Final news | 4",
+        "Repositories | 10",
+        "cached (2026-08-23)",
+        "Effective AI mode | off",
+        "AI calls | 2",
+        "11 / 22 / 33",
+        "lower bound",
+        "USD 0.001234",
+        "USD 0.037020",
+        "Mail outcome | ambiguous",
+        "safe degraded warning",
+    ):
+        assert phrase in content
+    assert secret not in content
+    assert "reader@example.test" not in content
+    assert "oauth-value" not in content
+    assert "public-client" not in content
+    assert "id-value" not in content
+
+
+def test_ambiguous_failure_still_appends_typed_run_summary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Would catch failed mail calls losing their operator-visible ambiguous outcome."""
+    from ai_daily.cli import main
+    from ai_daily.mail import MailSendError
+
+    result = FakeResult(
+        delivery_outcome="ambiguous",
+        github_status="current",
+        github_data_date="2026-08-24",
+        final_news_count=1,
+    )
+
+    class AmbiguousPipeline(FakePipeline):
+        def run(self, options: object) -> FakeResult:
+            self.delivery_outcome = "ambiguous"
+            self.last_result = result
+            raise MailSendError("safe failure")
+
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr("ai_daily.cli.build_pipeline", lambda: AmbiguousPipeline(result))
+    monkeypatch.setattr("ai_daily.cli.required_send_secret_names", lambda mode: ())
+
+    assert main(["run", "--send", "--ai-mode", "off"]) == 1
+    content = summary.read_text("utf-8")
+    assert "Mail outcome | ambiguous" in content
+    assert "Final news | 1" in content

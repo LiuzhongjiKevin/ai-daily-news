@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta, tzinfo
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal, Protocol
+from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -15,7 +16,12 @@ from dateutil.tz import gettz
 from pydantic import BaseModel, Field
 
 from ai_daily.ai import AIEnrichmentError
-from ai_daily.collectors.base import CollectorRegistry, SourceConfig, parse_datetime
+from ai_daily.collectors.base import (
+    CollectorRegistry,
+    SourceCollectionBatch,
+    SourceConfig,
+    parse_datetime,
+)
 from ai_daily.collectors.github import (
     GitHubDataError,
     GitHubResponseError,
@@ -30,16 +36,25 @@ from ai_daily.github_rank import (
     load_recent_snapshots,
     rank_repositories,
 )
-from ai_daily.models import Digest, NewsCluster, RankedRepo, RawItem, RepoSnapshot, UsageRecord
+from ai_daily.models import (
+    Digest,
+    NewsCluster,
+    RankedRepo,
+    RepoSnapshot,
+    RunState,
+    SafeAttemptId,
+    UsageRecord,
+)
 from ai_daily.news import prepare_news
 from ai_daily.render import RenderedDigest, render_digest
-from ai_daily.state import StateStore
+from ai_daily.state import DeliveryIntentConflictError, DeliveryStateError, StateStore
 
 
 class RunOptions(BaseModel):
     send: bool = False
     force: bool = False
     ai_mode: Literal["full", "economy", "off"] | None = None
+    attempt_id: SafeAttemptId | None = None
 
 
 class OutputPaths(BaseModel):
@@ -58,6 +73,24 @@ class RunResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     estimated_cost: Decimal = Decimal(0)
     usage: list[UsageRecord] = Field(default_factory=list)
+    delivery_outcome: Literal["not_attempted", "ambiguous", "accepted"] = "not_attempted"
+    source_successes: int = Field(default=0, ge=0)
+    source_total: int = Field(default=0, ge=0)
+    source_success_rate: float | None = Field(default=None, ge=0, le=100)
+    news_candidate_count: int = Field(default=0, ge=0)
+    final_news_count: int = Field(default=0, ge=0)
+    repository_count: int = Field(default=0, ge=0)
+    github_status: Literal["not_run", "current", "cached", "unavailable"] = "not_run"
+    github_data_date: str | None = None
+    effective_ai_mode: Literal["full", "economy", "off"] | None = None
+    ai_call_count: int = Field(default=0, ge=0)
+    token_usage_complete: bool = True
+    cost_is_lower_bound: bool = False
+    input_cache_hit_tokens: int = Field(default=0, ge=0)
+    input_cache_miss_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cost_currency: str = "USD"
+    thirty_day_projection: Decimal = Decimal(0)
 
 
 class Clock(Protocol):
@@ -102,6 +135,18 @@ class GitHubRankingBatch(list[RankedRepo]):
 
 class NoUsableDigestDataError(RuntimeError):
     """Neither digest section contains reader-safe data, so rendering must not continue."""
+
+
+class DeliveryNoSendError(RuntimeError):
+    """A typed safe failure prevents Graph from being called."""
+
+
+class DeliveryReservationRequiredError(DeliveryNoSendError):
+    """An externally owned send lacks its committed reservation."""
+
+
+class DeliveryAmbiguousError(DeliveryNoSendError):
+    """Unresolved delivery work requires mailbox inspection before another send."""
 
 
 class SystemClock:
@@ -149,10 +194,14 @@ class DailyPipeline:
         self.fetch_repositories = fetch_repositories
         self.renderer = renderer
         self._usage_for_cost_report: list[UsageRecord] = []
+        self.delivery_outcome: Literal["not_attempted", "ambiguous", "accepted"] = (
+            "not_attempted"
+        )
+        self.last_result: RunResult | None = None
 
     def collect_news(
         self, since: datetime | None, now: datetime
-    ) -> tuple[list[RawItem], list[str]]:
+    ) -> SourceCollectionBatch:
         """Collect every configured source, leaving individual source errors as registry warnings."""
         now_utc = parse_datetime(now)
         earliest = now_utc - timedelta(hours=36)
@@ -222,80 +271,181 @@ class DailyPipeline:
         return OutputPaths(markdown=markdown, html=html, text=text, cost_report=cost_report)
 
     def run(self, options: RunOptions) -> RunResult:
+        self.delivery_outcome = "not_attempted"
         state = self.state_store.load_run_state()
         local_now = self.clock.now(_timezone(self.settings.timezone))
         local_date = local_now.date().isoformat()
-        if options.send and local_date in state.sent_dates and not options.force:
-            return RunResult(
-                local_date=local_date,
-                sent=False,
-                already_sent=True,
-                message_id=state.sent_dates[local_date],
-            )
-
-        raw_items, warnings = self.collect_news(state.last_success_at, local_now)
-        candidates = prepare_news(
-            raw_items,
-            self.settings.max_news_candidates,
-            min_score=self.settings.min_news_score,
-            now=local_now,
-        )
-        try:
-            ranking_batch = self.collect_and_rank_repositories(local_now.date())
-            ranked_repos = list(ranking_batch)
-            warnings.extend(ranking_batch.warnings)
-        except GitHubCollectionError as error:
-            warnings.extend(error.warnings)
-            ranked_repos, cached_day = self._load_cached_rankings(local_now.date())
-            if cached_day is None:
-                warnings.append("GitHub data unavailable; no cached snapshot used")
-            else:
-                warnings.append(f"GitHub data unavailable; using cached snapshot from {cached_day.isoformat()}")
-
-        if not candidates and not ranked_repos:
-            raise NoUsableDigestDataError("No usable news or GitHub repository data is available")
-
         mode = options.ai_mode or self.settings.ai_mode
-        try:
-            news, repositories, usage = self.enricher.enrich(candidates, ranked_repos, mode)
-        except AIEnrichmentError as error:
-            warnings.append("AI enrichment failed; deterministic fallback used")
-            news, repositories, fallback_usage = self.off_enricher.enrich(
-                candidates, ranked_repos, "off"
+        result = RunResult(
+            local_date=local_date,
+            sent=False,
+            source_total=len(self.sources),
+            effective_ai_mode=mode,
+            cost_currency=self.prices.currency,
+        )
+        self.last_result = result
+        if options.send and local_date in state.sent_dates and not options.force:
+            result.already_sent = True
+            result.message_id = state.sent_dates[local_date]
+            return result
+
+        owned_attempt: str | None = None
+        if options.send:
+            owned_attempt, state = self._claim_delivery(
+                state,
+                local_date,
+                local_now,
+                options,
             )
-            usage = [*error.usage, *fallback_usage]
 
-        cost = calculate_cost(usage, self.prices)
-        if not cost.is_complete:
-            warnings.append("AI usage data incomplete; reported cost is a lower bound")
-        digest = Digest(
-            local_date=local_date,
-            news=news,
-            repositories=repositories,
-            warnings=warnings,
-            usage=usage,
-            estimated_cost=float(cost.total),
-        )
-        rendered = self.renderer(digest, cost, self.templates_dir)
-        self._usage_for_cost_report = usage
-        paths = self.write_outputs(local_date, rendered, cost)
+        try:
+            collection = self.collect_news(state.last_success_at, local_now)
+            raw_items = collection.items
+            warnings = list(collection.warnings)
+            result.source_successes = collection.source_successes
+            result.source_total = collection.source_total
+            if result.source_total:
+                result.source_success_rate = 100 * result.source_successes / result.source_total
+            candidates = prepare_news(
+                raw_items,
+                self.settings.max_news_candidates,
+                min_score=self.settings.min_news_score,
+                now=local_now,
+            )
+            result.news_candidate_count = len(candidates)
+            try:
+                ranking_batch = self.collect_and_rank_repositories(local_now.date())
+                ranked_repos = list(ranking_batch)
+                warnings.extend(ranking_batch.warnings)
+                result.github_status = "current"
+                result.github_data_date = local_date
+            except GitHubCollectionError as error:
+                warnings.extend(error.warnings)
+                ranked_repos, cached_day = self._load_cached_rankings(local_now.date())
+                if cached_day is None:
+                    warnings.append("GitHub data unavailable; no cached snapshot used")
+                    result.github_status = "unavailable"
+                else:
+                    warnings.append(
+                        "GitHub data unavailable; using cached snapshot from "
+                        f"{cached_day.isoformat()}"
+                    )
+                    result.github_status = "cached"
+                    result.github_data_date = cached_day.isoformat()
 
-        message_id = self.mailer.send(rendered) if options.send else None
-        if message_id is not None:
-            state.sent_dates[local_date] = message_id
-            state.last_success_at = local_now
-            self.state_store.save_run_state(state)
-            self.state_store.prune_snapshots(local_now.date(), self.settings.snapshot_retention_days)
+            result.warnings = list(warnings)
+            if not candidates and not ranked_repos:
+                raise NoUsableDigestDataError(
+                    "No usable news or GitHub repository data is available"
+                )
 
-        return RunResult(
-            local_date=local_date,
-            sent=message_id is not None,
-            message_id=message_id,
-            markdown_path=paths.markdown,
-            warnings=warnings,
-            estimated_cost=cost.total,
-            usage=usage,
-        )
+            try:
+                news, repositories, usage = self.enricher.enrich(candidates, ranked_repos, mode)
+            except AIEnrichmentError as error:
+                warnings.append("AI enrichment failed; deterministic fallback used")
+                result.effective_ai_mode = "off"
+                news, repositories, fallback_usage = self.off_enricher.enrich(
+                    candidates, ranked_repos, "off"
+                )
+                usage = [*error.usage, *fallback_usage]
+
+            cost = calculate_cost(usage, self.prices)
+            if not cost.is_complete:
+                warnings.append("AI usage data incomplete; reported cost is a lower bound")
+            result.warnings = warnings
+            result.estimated_cost = cost.total
+            result.usage = usage
+            result.final_news_count = len(news)
+            result.repository_count = len(repositories)
+            result.ai_call_count = sum(record.call_count for record in usage)
+            result.token_usage_complete = cost.is_complete
+            result.cost_is_lower_bound = not cost.is_complete
+            result.input_cache_hit_tokens = sum(
+                record.input_cache_hit_tokens for record in usage
+            )
+            result.input_cache_miss_tokens = sum(
+                record.input_cache_miss_tokens for record in usage
+            )
+            result.output_tokens = sum(record.output_tokens for record in usage)
+            result.thirty_day_projection = cost.thirty_day_projection
+            self._usage_for_cost_report = usage
+            digest = Digest(
+                local_date=local_date,
+                news=news,
+                repositories=repositories,
+                warnings=warnings,
+                usage=usage,
+                estimated_cost=float(cost.total),
+            )
+            rendered = self.renderer(digest, cost, self.templates_dir)
+            paths = self.write_outputs(local_date, rendered, cost)
+            result.markdown_path = paths.markdown
+
+            message_id: str | None = None
+            if options.send:
+                assert owned_attempt is not None
+                intent = state.delivery_intents[local_date]
+                intent.status = "ambiguous"
+                self.state_store.save_run_state(state)
+                self.delivery_outcome = "ambiguous"
+                result.delivery_outcome = "ambiguous"
+                message_id = self.mailer.send(rendered)
+                self.delivery_outcome = "accepted"
+                result.delivery_outcome = "accepted"
+                result.message_id = message_id
+                state.sent_dates[local_date] = message_id
+                state.last_success_at = local_now
+                if state.delivery_intents[local_date].attempt_id != owned_attempt:
+                    raise DeliveryAmbiguousError("Delivery ownership changed before commit")
+                del state.delivery_intents[local_date]
+                self.state_store.save_run_state(state)
+                self.state_store.prune_snapshots(
+                    local_now.date(), self.settings.snapshot_retention_days
+                )
+                result.sent = True
+            return result
+        except Exception:
+            if owned_attempt is not None and self.delivery_outcome == "not_attempted":
+                self._release_unattempted(local_date, owned_attempt)
+            raise
+
+    def _claim_delivery(
+        self,
+        state: RunState,
+        local_date: str,
+        local_now: datetime,
+        options: RunOptions,
+    ) -> tuple[str, RunState]:
+        if options.attempt_id is not None:
+            intent = state.delivery_intents.get(local_date)
+            if intent is None:
+                raise DeliveryReservationRequiredError(
+                    "A committed delivery reservation is required"
+                )
+            if intent.attempt_id != options.attempt_id or intent.status != "reserved":
+                raise DeliveryAmbiguousError("Delivery is blocked by unresolved intent")
+            return options.attempt_id, state
+
+        attempt_id = f"local-{uuid4().hex}"
+        try:
+            reservation = self.state_store.reserve_delivery(
+                local_date,
+                attempt_id,
+                local_now,
+                force=options.force,
+            )
+        except DeliveryIntentConflictError as error:
+            raise DeliveryAmbiguousError("Delivery is blocked by unresolved intent") from error
+        if reservation == "already_sent":
+            raise DeliveryReservationRequiredError("Delivery date was already completed")
+        return attempt_id, self.state_store.load_run_state()
+
+    def _release_unattempted(self, local_date: str, attempt_id: str) -> None:
+        try:
+            self.state_store.release_delivery(local_date, attempt_id)
+        except (DeliveryStateError, OSError):
+            # The workflow cleanup step retries this operation. Retaining intent is conservative.
+            return
 
     def _retained_snapshots(self, today: date) -> list[RepoSnapshot]:
         snapshots: list[RepoSnapshot] = []
@@ -346,11 +496,21 @@ class DailyPipeline:
 
     @staticmethod
     def _cost_json(cost: CostReport, usage: list[UsageRecord]) -> str:
+        ai_call_count = sum(record.call_count for record in usage)
+        known_tokens = {
+            "input_cache_hit": sum(record.input_cache_hit_tokens for record in usage),
+            "input_cache_miss": sum(record.input_cache_miss_tokens for record in usage),
+            "output": sum(record.output_tokens for record in usage),
+        }
         report = {
             "currency": cost.currency,
             "total": str(cost.total),
             "thirty_day_projection": str(cost.thirty_day_projection),
             "is_complete": cost.is_complete,
+            "ai_call_count": ai_call_count,
+            "token_usage_complete": cost.is_complete,
+            "cost_is_lower_bound": not cost.is_complete,
+            "known_tokens": known_tokens,
             "usage": [
                 {
                     "stage": record.stage,

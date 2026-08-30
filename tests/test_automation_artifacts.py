@@ -66,10 +66,16 @@ def test_daily_schedule_manual_inputs_and_state_commit_are_restricted() -> None:
     steps = workflow["jobs"]["daily"]["steps"]
     command = next(step["run"] for step in steps if step.get("name") == "Run daily digest")
     assert 'github.event_name' in command and 'ai-daily run --send' in command
-    commit = next(step["run"] for step in steps if step.get("name") == "Commit durable state")
-    assert "git add -- data/ digests/ data/microsoft-token.enc" in commit
-    assert "git add -A" not in commit
-    assert "git pull --rebase --autostash" in commit
+    commits = [
+        step["run"]
+        for step in steps
+        if step.get("name")
+        in {"Commit reserved intent", "Commit unattempted cleanup", "Commit accepted state"}
+    ]
+    assert len(commits) == 3
+    assert "git add -- data/ digests/ data/microsoft-token.enc" in commits[-1]
+    assert all("git add -A" not in commit for commit in commits)
+    assert all("git pull --rebase --autostash" in commit for commit in commits)
 
 
 def test_scheduled_delivery_requires_explicit_repository_variable_gate() -> None:
@@ -84,9 +90,11 @@ def test_daily_persists_durable_state_before_nonessential_artifact_upload() -> N
     """Would catch an artifact outage preventing the sent marker from being committed after send."""
     workflow = load_workflow("daily.yml")
     steps = workflow["jobs"]["daily"]["steps"]
-    run_index = next(index for index, step in enumerate(steps) if step.get("name") == "Run daily digest")
+    run_index = next(
+        index for index, step in enumerate(steps) if step.get("name") == "Run daily digest"
+    )
     commit_index = next(
-        index for index, step in enumerate(steps) if step.get("name") == "Commit durable state"
+        index for index, step in enumerate(steps) if step.get("name") == "Commit accepted state"
     )
     artifact_index = next(
         index
@@ -95,8 +103,77 @@ def test_daily_persists_durable_state_before_nonessential_artifact_upload() -> N
     )
 
     assert run_index < commit_index < artifact_index
-    assert commit_index == run_index + 1
+    assert commit_index > run_index
     assert steps[artifact_index]["if"] == "always()"
+
+
+def test_daily_commits_reservation_before_any_graph_capable_step() -> None:
+    """Would catch send running after only a local, unpushed reservation."""
+    workflow = load_workflow("daily.yml")
+    steps = workflow["jobs"]["daily"]["steps"]
+    reserve_index = next(
+        index for index, step in enumerate(steps) if step.get("name") == "Reserve delivery intent"
+    )
+    intent_commit_index = next(
+        index for index, step in enumerate(steps) if step.get("name") == "Commit reserved intent"
+    )
+    digest_index = next(
+        index for index, step in enumerate(steps) if step.get("name") == "Run daily digest"
+    )
+    reserve = steps[reserve_index]
+    digest = steps[digest_index]
+
+    assert reserve_index < intent_commit_index < digest_index
+    assert "github.run_id" in workflow["jobs"]["daily"]["env"]["AI_DAILY_ATTEMPT_ID"]
+    assert "github.run_attempt" in workflow["jobs"]["daily"]["env"]["AI_DAILY_ATTEMPT_ID"]
+    assert "--attempt-id" in reserve["run"]
+    assert "--attempt-id" in digest["run"]
+    assert "steps.reserve.outputs.reservation_status" in digest["if"]
+
+
+def test_daily_cleanup_is_only_for_explicit_not_attempted_output() -> None:
+    """Would catch ambiguous, accepted, or missing runner output clearing remote intent."""
+    steps = load_workflow("daily.yml")["jobs"]["daily"]["steps"]
+    cleanup = next(step for step in steps if step.get("name") == "Release unattempted intent")
+    cleanup_commit = next(
+        step for step in steps if step.get("name") == "Commit unattempted cleanup"
+    )
+
+    assert "steps.digest.outputs.delivery_outcome == 'not_attempted'" in cleanup["if"]
+    assert "always()" in cleanup["if"]
+    assert "steps.cleanup.outcome == 'success'" in cleanup_commit["if"]
+    assert "release-delivery" in cleanup["run"]
+
+
+def test_daily_final_commit_requires_successful_accepted_delivery() -> None:
+    """Would catch Graph/state failure or missing output publishing a false completed marker."""
+    steps = load_workflow("daily.yml")["jobs"]["daily"]["steps"]
+    final_commit = next(step for step in steps if step.get("name") == "Commit accepted state")
+
+    assert "steps.digest.outcome == 'success'" in final_commit["if"]
+    assert "steps.digest.outputs.delivery_outcome == 'accepted'" in final_commit["if"]
+    assert "git push origin" in final_commit["run"]
+
+
+def test_manual_source_validation_is_read_only_locked_and_pinned() -> None:
+    """Would catch diagnostics gaining mail/state authority or mutable dependencies/actions."""
+    workflow = load_workflow("validate-sources.yml")
+    trigger = workflow[True]
+    assert set(trigger) == {"workflow_dispatch"}
+    assert trigger["workflow_dispatch"]["inputs"]["minimum_success"]["default"] == 80
+    assert workflow["permissions"] == {"contents": "read"}
+    steps = workflow["jobs"]["validate"]["steps"]
+    assert [step["uses"] for step in steps if "uses" in step] == [
+        "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38",
+    ]
+    commands = "\n".join(step.get("run", "") for step in steps)
+    assert "pip install --requirement requirements-prod.lock" in commands
+    assert "pip install --no-deps --no-build-isolation -e ." in commands
+    assert "validate-sources --minimum-success" in commands
+    assert "run --send" not in commands
+    assert "git push" not in commands
+    assert "secrets." not in commands
 
 
 def test_operator_guide_contains_private_outlook_and_safety_invariants() -> None:

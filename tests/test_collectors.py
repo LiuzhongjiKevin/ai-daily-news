@@ -331,12 +331,15 @@ def test_registry_isolates_one_source_failure_while_returning_other_source_items
     failing = valid.model_copy(update={"id": "unavailable", "url": "https://example.test/missing.xml"})
     registry = CollectorRegistry({"feed": FeedCollector(http_client)})
 
-    items, warnings = registry.collect_all([valid, failing], datetime(2026, 8, 23, tzinfo=UTC))
+    batch = registry.collect_all([valid, failing], datetime(2026, 8, 23, tzinfo=UTC))
+    items, warnings = batch
 
     assert [item.source_id for item in items] == ["deepmind"]
     assert warnings == [
         "unavailable: HTTP 404 content-type=unknown url=https://example.test/missing.xml"
     ]
+    assert batch.source_successes == 1
+    assert batch.source_total == 2
 
 
 def test_registry_warning_contains_redacted_actionable_http_diagnostics() -> None:

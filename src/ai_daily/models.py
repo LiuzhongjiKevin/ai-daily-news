@@ -1,7 +1,16 @@
-from datetime import datetime
-from typing import Literal
+from datetime import date, datetime
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, StringConstraints, field_validator
+
+SafeAttemptId = Annotated[
+    str,
+    StringConstraints(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    ),
+]
 
 
 class RawItem(BaseModel):
@@ -65,6 +74,34 @@ class Digest(BaseModel):
     estimated_cost: float = 0.0
 
 
+class DeliveryIntent(BaseModel):
+    attempt_id: SafeAttemptId
+    created_at: datetime
+    status: Literal["reserved", "ambiguous"] = "reserved"
+
+    @field_validator("created_at")
+    @classmethod
+    def require_aware_creation_time(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("delivery intent creation time must be timezone-aware")
+        return value
+
+
 class RunState(BaseModel):
     last_success_at: datetime | None = None
     sent_dates: dict[str, str] = Field(default_factory=dict)
+    delivery_intents: dict[str, DeliveryIntent] = Field(default_factory=dict)
+
+    @field_validator("delivery_intents")
+    @classmethod
+    def require_iso_delivery_dates(
+        cls, value: dict[str, DeliveryIntent]
+    ) -> dict[str, DeliveryIntent]:
+        for local_date in value:
+            try:
+                parsed = date.fromisoformat(local_date)
+            except ValueError as error:
+                raise ValueError("delivery intent date must use ISO format") from error
+            if parsed.isoformat() != local_date:
+                raise ValueError("delivery intent date must use ISO format")
+        return value

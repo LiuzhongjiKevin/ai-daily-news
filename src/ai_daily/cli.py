@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
@@ -20,11 +22,25 @@ from ai_daily.collectors.base import SourceConfig, format_source_failure
 from ai_daily.config import AppSettings, load_prices, load_settings
 from ai_daily.http import RetryingClient
 from ai_daily.mail import GraphMailer, MailAuthError, MailSendError
-from ai_daily.pipeline import DailyPipeline, NoUsableDigestDataError, RunOptions
-from ai_daily.state import StateStore
+from ai_daily.pipeline import (
+    DailyPipeline,
+    DeliveryNoSendError,
+    NoUsableDigestDataError,
+    RunOptions,
+    _timezone,
+)
+from ai_daily.state import DeliveryStateError, StateStore
 
 AI_MODES = ("full", "economy", "off")
 _SEND_SECRETS = ("MS_CLIENT_ID", "MS_TOKEN_KEY", "OUTLOOK_SENDER", "MAIL_TO")
+_SUMMARY_SECRET_NAMES = ("DEEPSEEK_API_KEY", *_SEND_SECRETS, "GITHUB_TOKEN")
+_EMAIL_PATTERN = re.compile(r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_OAUTH_FIELD_PATTERN = re.compile(
+    r"\b(?:access_token|refresh_token|id_token|client_secret|client_id|token_type|"
+    r"expires_in|authorization|bearer)\b"
+    r"\s*[:=]?\s*[^\s|,;]+",
+    re.IGNORECASE,
+)
 
 
 class ConfigurationError(RuntimeError):
@@ -130,6 +146,90 @@ def build_pipeline() -> DailyPipeline:
     )
 
 
+def _current_local_time() -> datetime:
+    return datetime.now(_timezone("Asia/Shanghai"))
+
+
+def _write_step_output(name: str, value: str) -> None:
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if not output_path:
+        return
+    with Path(output_path).open("a", encoding="utf-8") as handle:
+        handle.write(f"{name}={value}\n")
+
+
+def _sanitize_summary_warning(value: object) -> str:
+    text = " ".join(str(value).split())
+    for name in _SUMMARY_SECRET_NAMES:
+        secret = os.environ.get(name)
+        if secret:
+            text = text.replace(secret, "<redacted>")
+    text = _EMAIL_PATTERN.sub("<redacted-email>", text)
+    text = _OAUTH_FIELD_PATTERN.sub("<redacted-oauth-field>", text)
+    return text.replace("|", "\\|")[:300]
+
+
+def _write_run_summary(result: object | None, delivery_outcome: str) -> None:
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+
+    def metric(name: str, default: object) -> object:
+        return getattr(result, name, default) if result is not None else default
+
+    source_successes = metric("source_successes", 0)
+    source_total = metric("source_total", 0)
+    source_rate = metric("source_success_rate", None)
+    source_text = (
+        f"{source_successes}/{source_total} ({float(source_rate):.1f}%)"
+        if source_rate is not None
+        else f"{source_successes}/{source_total} (not run)"
+    )
+    github_status = str(metric("github_status", "not_run"))
+    github_date = metric("github_data_date", None)
+    github_text = f"{github_status} ({github_date})" if github_date else github_status
+    completeness = (
+        "lower bound" if bool(metric("cost_is_lower_bound", False)) else "complete"
+    )
+    currency = str(metric("cost_currency", "USD"))
+    lines = [
+        "## AI Daily run summary",
+        "",
+        "| Metric | Value |",
+        "| --- | --- |",
+        f"| Beijing date | {metric('local_date', 'unavailable')} |",
+        f"| Source success | {source_text} |",
+        f"| Candidates | {metric('news_candidate_count', 0)} |",
+        f"| Final news | {metric('final_news_count', 0)} |",
+        f"| Repositories | {metric('repository_count', 0)} |",
+        f"| GitHub data | {github_text} |",
+        f"| Effective AI mode | {metric('effective_ai_mode', 'not_run')} |",
+        f"| AI calls | {metric('ai_call_count', 0)} |",
+        (
+            "| Known tokens (cache hit / miss / output) | "
+            f"{metric('input_cache_hit_tokens', 0)} / "
+            f"{metric('input_cache_miss_tokens', 0)} / {metric('output_tokens', 0)} |"
+        ),
+        f"| Token/cost completeness | {completeness} |",
+        f"| Current cost | {currency} {metric('estimated_cost', Decimal(0))} |",
+        (
+            "| 30-day projection | "
+            f"{currency} {metric('thirty_day_projection', Decimal(0))} |"
+        ),
+        f"| Mail outcome | {delivery_outcome} |",
+    ]
+    warnings = list(metric("warnings", []) or [])
+    if warnings:
+        lines.extend(["", "### Sanitized warnings", ""])
+        lines.extend(f"- {_sanitize_summary_warning(warning)}" for warning in warnings)
+    with Path(summary_path).open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+
+def _delivery_store() -> StateStore:
+    return StateStore(project_root() / "data")
+
+
 def validate_collected_items(source: SourceConfig, items: list[object]) -> None:
     """Treat empty parsers as failures where that would mask a broken source adapter."""
     from ai_daily.collectors.base import PageParseError, SourceParseError
@@ -174,7 +274,8 @@ def _write_source_summary(outcomes: list[tuple[str, str | None]], threshold: int
         "| --- | --- |",
     ]
     lines.extend(
-        f"| `{source}` | {'OK' if failure is None else 'FAILED: ' + failure} |"
+        f"| `{_sanitize_summary_warning(source)}` | "
+        f"{'OK' if failure is None else 'FAILED: ' + _sanitize_summary_warning(failure)} |"
         for source, failure in outcomes
     )
     with Path(summary_path).open("a", encoding="utf-8") as handle:
@@ -190,18 +291,38 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--force", action="store_true")
         if name == "run":
             command.add_argument("--send", action="store_true")
+            command.add_argument("--attempt-id")
     validate = commands.add_parser("validate-sources")
     validate.add_argument("--minimum-success", type=int, default=80)
+    reserve = commands.add_parser("reserve-delivery")
+    reserve.add_argument("--attempt-id", required=True)
+    reserve.add_argument("--force", action="store_true")
+    release = commands.add_parser("release-delivery")
+    release.add_argument("--attempt-id", required=True)
+    release.add_argument("--date")
+    resolve = commands.add_parser("resolve-delivery")
+    resolve.add_argument("resolution", choices=("retry", "sent"))
+    resolve.add_argument("--date")
+    resolve.add_argument("--message-id")
     return parser
 
 
 def _run_command(args: argparse.Namespace) -> int:
+    pipeline: DailyPipeline | None = None
     try:
         send = args.command == "run" and args.send
         mode = args.ai_mode or _settings_mode()
         if send and not _validate_send_secrets(mode):
             return 2
-        result = build_pipeline().run(RunOptions(send=send, force=args.force, ai_mode=args.ai_mode))
+        pipeline = build_pipeline()
+        result = pipeline.run(
+            RunOptions(
+                send=send,
+                force=args.force,
+                ai_mode=args.ai_mode,
+                attempt_id=getattr(args, "attempt_id", None),
+            )
+        )
     except RepositoryLayoutError:
         print(
             "Run failed: run from a checked-out repository installed with "
@@ -212,16 +333,28 @@ def _run_command(args: argparse.Namespace) -> int:
     except ConfigurationError:
         print("Run failed: runtime configuration is unavailable.", file=sys.stderr)
         return 1
-    except (MailAuthError, MailSendError, NoUsableDigestDataError, OSError):
+    except (
+        DeliveryNoSendError,
+        MailAuthError,
+        MailSendError,
+        NoUsableDigestDataError,
+        OSError,
+        ValidationError,
+    ):
         print("Run failed: required service or local state is unavailable.", file=sys.stderr)
         return 1
-    if result.already_sent:
-        print(f"Already-sent no-op: {result.local_date}.")
-    elif result.sent:
-        print(f"Send accepted/queued: {result.local_date}; id={result.message_id}.")
     else:
-        print(f"Preview generated: {result.local_date}; archive={result.markdown_path}.")
-    return 0
+        if result.already_sent:
+            print(f"Already-sent no-op: {result.local_date}.")
+        elif result.sent:
+            print(f"Send accepted/queued: {result.local_date}; id={result.message_id}.")
+        else:
+            print(f"Preview generated: {result.local_date}; archive={result.markdown_path}.")
+        return 0
+    finally:
+        outcome = pipeline.delivery_outcome if pipeline is not None else "not_attempted"
+        _write_step_output("delivery_outcome", outcome)
+        _write_run_summary(pipeline.last_result if pipeline is not None else None, outcome)
 
 
 def _validate_command(args: argparse.Namespace) -> int:
@@ -236,16 +369,51 @@ def _validate_command(args: argparse.Namespace) -> int:
         return 1
     successes = sum(failure is None for _, failure in outcomes)
     percent = (100 * successes / len(outcomes)) if outcomes else 0
-    failed = [source for source, failure in outcomes if failure is not None]
+    failed = [
+        _sanitize_summary_warning(source)
+        for source, failure in outcomes
+        if failure is not None
+    ]
     print(f"Source validation: {successes}/{len(outcomes)} ({percent:.1f}%).")
     if failed:
         print("Failed sources: " + ", ".join(failed) + ".")
     return 0 if percent >= args.minimum_success else 1
 
 
+def _delivery_command(args: argparse.Namespace) -> int:
+    try:
+        local_date = getattr(args, "date", None) or _current_local_time().date().isoformat()
+        store = _delivery_store()
+        if args.command == "reserve-delivery":
+            status = store.reserve_delivery(
+                local_date,
+                args.attempt_id,
+                _current_local_time(),
+                force=args.force,
+            )
+            _write_step_output("reservation_status", status)
+            print(f"Delivery reservation: {status}.")
+            return 0
+        if args.command == "release-delivery":
+            status = store.release_delivery(local_date, args.attempt_id)
+            _write_step_output("release_status", status)
+            print(f"Delivery cleanup: {status}.")
+            return 0
+        status = store.resolve_delivery(local_date, args.resolution, args.message_id)
+        print(f"Delivery ambiguity resolved as {status}.")
+        return 0
+    except (DeliveryStateError, OSError, ValidationError):
+        print("Delivery state command failed: input or local state is unavailable.", file=sys.stderr)
+        return 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return _validate_command(args) if args.command == "validate-sources" else _run_command(args)
+    if args.command == "validate-sources":
+        return _validate_command(args)
+    if args.command in {"reserve-delivery", "release-delivery", "resolve-delivery"}:
+        return _delivery_command(args)
+    return _run_command(args)
 
 
 if __name__ == "__main__":  # pragma: no cover

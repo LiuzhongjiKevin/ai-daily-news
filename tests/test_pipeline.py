@@ -9,14 +9,16 @@ import pytest
 
 from ai_daily.ai import AIEnricher, AIEnrichmentError, OffEnricher
 from ai_daily.collectors import github
+from ai_daily.collectors.base import SourceCollectionBatch
 from ai_daily.config import AppSettings, ModelPrice, PricingTable
 from ai_daily.mail import MailSendError
 from ai_daily.models import NewsCluster, RankedRepo, RawItem, RepoSnapshot, RunState, UsageRecord
-from ai_daily.render import RenderedDigest
+from ai_daily.render import RenderedDigest, render_digest
 from ai_daily.state import StateStore
 
 NOW = datetime(2026, 8, 23, 18, 30, tzinfo=UTC)
 TEMPLATES = Path(__file__).parents[1] / "templates"
+ATTEMPT_TIME = NOW.astimezone(timezone(timedelta(hours=8)))
 
 
 def item() -> RawItem:
@@ -51,9 +53,16 @@ class Registry:
     def __init__(self) -> None:
         self.since: datetime | None = None
 
-    def collect_all(self, sources: list[object], since: datetime | None) -> tuple[list[RawItem], list[str]]:
+    def collect_all(
+        self, sources: list[object], since: datetime | None
+    ) -> SourceCollectionBatch:
         self.since = since
-        return [item()], []
+        return SourceCollectionBatch(
+            items=[item()],
+            warnings=[],
+            source_successes=len(sources),
+            source_total=len(sources),
+        )
 
 
 class Enricher:
@@ -69,16 +78,35 @@ class Mailer:
 
 
 class FixedRegistry(Registry):
-    def __init__(self, rows: list[RawItem], warnings: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        rows: list[RawItem],
+        warnings: list[str] | None = None,
+        *,
+        source_successes: int | None = None,
+    ) -> None:
         super().__init__()
         self.rows = rows
         self.warnings = warnings or []
+        self.source_successes = source_successes
         self.calls = 0
 
-    def collect_all(self, sources: list[object], since: datetime | None) -> tuple[list[RawItem], list[str]]:
+    def collect_all(
+        self, sources: list[object], since: datetime | None
+    ) -> SourceCollectionBatch:
         self.calls += 1
         self.since = since
-        return self.rows, self.warnings
+        successes = (
+            self.source_successes
+            if self.source_successes is not None
+            else max(0, len(sources) - len(self.warnings))
+        )
+        return SourceCollectionBatch(
+            items=self.rows,
+            warnings=self.warnings,
+            source_successes=successes,
+            source_total=len(sources),
+        )
 
 
 class FailingEnricher:
@@ -137,6 +165,8 @@ def make_pipeline(
     mailer: object | None = None,
     discover: object | None = None,
     fetch: object | None = None,
+    sources: list[object] | None = None,
+    renderer: object | None = None,
 ) -> object:
     from ai_daily.pipeline import DailyPipeline
 
@@ -147,7 +177,7 @@ def make_pipeline(
             models={"test-model": ModelPrice(input_cache_hit=0, input_cache_miss=0, output=1)},
         ),
         state_store=store or StateStore(tmp_path / "data"),
-        sources=[],
+        sources=sources or [],  # type: ignore[arg-type]
         collector_registry=registry or FixedRegistry([item()]),
         github_client=object(),
         github_token="test-token",
@@ -159,6 +189,7 @@ def make_pipeline(
         clock=Clock(),
         discover_repositories=discover or (lambda *_: ["owner/repo"]),  # type: ignore[arg-type]
         fetch_repositories=fetch or (lambda *_: [snapshot()]),  # type: ignore[arg-type]
+        renderer=renderer or render_digest,  # type: ignore[arg-type]
     )
 
 
@@ -223,10 +254,34 @@ def test_already_sent_date_is_a_true_no_op(tmp_path: Path) -> None:
         "warnings": [],
         "estimated_cost": Decimal(0),
         "usage": [],
+        "delivery_outcome": "not_attempted",
+        "source_successes": 0,
+        "source_total": 0,
+        "source_success_rate": None,
+        "news_candidate_count": 0,
+        "final_news_count": 0,
+        "repository_count": 0,
+        "github_status": "not_run",
+        "github_data_date": None,
+        "effective_ai_mode": "full",
+        "ai_call_count": 0,
+        "token_usage_complete": True,
+        "cost_is_lower_bound": False,
+        "input_cache_hit_tokens": 0,
+        "input_cache_miss_tokens": 0,
+        "output_tokens": 0,
+        "cost_currency": "USD",
+        "thirty_day_projection": Decimal(0),
     }
     assert registry.calls == 0
     assert mailer.calls == 0
     assert not (tmp_path / "output").exists()
+    assert result.source_total == 0
+    assert result.source_success_rate is None
+    assert result.github_status == "not_run"
+    assert result.effective_ai_mode == "full"
+    assert result.ai_call_count == 0
+    assert result.delivery_outcome == "not_attempted"
 
 
 def test_same_day_preview_still_generates_after_a_sent_marker(tmp_path: Path) -> None:
@@ -265,6 +320,153 @@ def test_force_resends_and_replaces_marker_only_after_new_acceptance(tmp_path: P
     assert store.load_run_state().sent_dates == {"2026-08-24": "new-acceptance"}
 
 
+def test_matching_committed_reservation_owns_send_and_clears_on_acceptance(
+    tmp_path: Path,
+) -> None:
+    """Would catch delivery bypassing or retaining the durable reservation around Graph."""
+    from ai_daily.pipeline import RunOptions
+
+    store = StateStore(tmp_path / "data")
+    store.reserve_delivery("2026-08-24", "gh-100-1", ATTEMPT_TIME)
+
+    result = make_pipeline(tmp_path, store=store).run(
+        RunOptions(send=True, attempt_id="gh-100-1")
+    )
+
+    assert result.delivery_outcome == "accepted"
+    state = store.load_run_state()
+    assert state.sent_dates == {"2026-08-24": "accepted-fingerprint"}
+    assert state.delivery_intents == {}
+
+
+def test_ambiguous_or_unowned_intent_blocks_send_even_with_force(tmp_path: Path) -> None:
+    """Would catch compensation or force repeating a possibly accepted external message."""
+    from ai_daily.models import DeliveryIntent
+    from ai_daily.pipeline import DeliveryAmbiguousError, RunOptions
+
+    store = StateStore(tmp_path / "data")
+    store.save_run_state(
+        RunState(
+            delivery_intents={
+                "2026-08-24": DeliveryIntent(
+                    attempt_id="gh-100-1", created_at=ATTEMPT_TIME, status="ambiguous"
+                )
+            }
+        )
+    )
+    registry = FixedRegistry([item()])
+    mailer = RecordingMailer()
+
+    with pytest.raises(DeliveryAmbiguousError):
+        make_pipeline(tmp_path, registry=registry, store=store, mailer=mailer).run(
+            RunOptions(send=True, force=True, attempt_id="gh-200-1")
+        )
+
+    assert registry.calls == 0
+    assert mailer.calls == 0
+
+
+def test_local_send_durably_reserves_before_mail_call(tmp_path: Path) -> None:
+    """Would catch non-workflow CLI sends bypassing the same safety protocol."""
+    from ai_daily.pipeline import RunOptions
+
+    store = StateStore(tmp_path / "data")
+
+    class InspectingMailer(RecordingMailer):
+        def send(self, rendered: RenderedDigest) -> str:
+            intent = store.load_run_state().delivery_intents["2026-08-24"]
+            assert intent.attempt_id.startswith("local-")
+            assert intent.status == "ambiguous"
+            return super().send(rendered)
+
+    result = make_pipeline(tmp_path, store=store, mailer=InspectingMailer()).run(
+        RunOptions(send=True)
+    )
+
+    assert result.delivery_outcome == "accepted"
+    assert store.load_run_state().delivery_intents == {}
+
+
+def test_pre_mail_failure_releases_owned_reservation_as_not_attempted(tmp_path: Path) -> None:
+    """Would catch deterministic generation failure needlessly blocking safe compensation."""
+    from ai_daily.pipeline import RunOptions
+
+    store = StateStore(tmp_path / "data")
+    store.reserve_delivery("2026-08-24", "gh-100-1", ATTEMPT_TIME)
+    pipeline = make_pipeline(
+        tmp_path,
+        store=store,
+        enricher=FailingEnricher(ValueError("programmer failure before mail")),
+    )
+
+    with pytest.raises(ValueError, match="programmer failure"):
+        pipeline.run(RunOptions(send=True, attempt_id="gh-100-1"))
+
+    assert pipeline.delivery_outcome == "not_attempted"
+    assert store.load_run_state().delivery_intents == {}
+
+
+def test_mail_failure_stays_ambiguous_until_operator_confirms_retry(tmp_path: Path) -> None:
+    """Would catch compensation retrying when transport failure may hide Graph acceptance."""
+    from ai_daily.pipeline import DeliveryAmbiguousError, RunOptions
+
+    store = StateStore(tmp_path / "data")
+    store.reserve_delivery("2026-08-24", "gh-100-1", ATTEMPT_TIME)
+    pipeline = make_pipeline(
+        tmp_path, store=store, mailer=RecordingMailer(MailSendError("transport lost"))
+    )
+
+    with pytest.raises(MailSendError):
+        pipeline.run(RunOptions(send=True, attempt_id="gh-100-1"))
+
+    assert pipeline.delivery_outcome == "ambiguous"
+    assert pipeline.last_result.delivery_outcome == "ambiguous"
+    assert pipeline.last_result.github_status == "current"
+    assert pipeline.last_result.final_news_count == 1
+    assert store.load_run_state().delivery_intents["2026-08-24"].status == "ambiguous"
+    with pytest.raises(DeliveryAmbiguousError):
+        make_pipeline(tmp_path, store=store).run(
+            RunOptions(send=True, attempt_id="gh-200-1")
+        )
+
+    store.resolve_delivery("2026-08-24", "retry")
+    store.reserve_delivery("2026-08-24", "gh-200-1", ATTEMPT_TIME)
+    recovered = make_pipeline(tmp_path, store=store).run(
+        RunOptions(send=True, attempt_id="gh-200-1")
+    )
+    assert recovered.sent is True
+
+
+def test_graph_acceptance_then_state_failure_remains_ambiguous_on_disk(tmp_path: Path) -> None:
+    """Would catch a post-202 state error erasing evidence needed to block compensation."""
+    from ai_daily.pipeline import RunOptions
+
+    data_dir = tmp_path / "data"
+    StateStore(data_dir).reserve_delivery("2026-08-24", "gh-100-1", ATTEMPT_TIME)
+
+    class FailFinalStateStore(StateStore):
+        def __init__(self, path: Path) -> None:
+            super().__init__(path)
+            self.saves = 0
+
+        def save_run_state(self, state: RunState) -> None:
+            self.saves += 1
+            if self.saves == 2:
+                raise OSError("simulated final state failure")
+            super().save_run_state(state)
+
+    store = FailFinalStateStore(data_dir)
+    pipeline = make_pipeline(tmp_path, store=store)
+
+    with pytest.raises(OSError, match="simulated final state failure"):
+        pipeline.run(RunOptions(send=True, attempt_id="gh-100-1"))
+
+    assert pipeline.delivery_outcome == "accepted"
+    persisted = StateStore(data_dir).load_run_state()
+    assert persisted.sent_dates == {}
+    assert persisted.delivery_intents["2026-08-24"].status == "ambiguous"
+
+
 def test_preview_writes_all_artifacts_without_creating_a_sent_marker(tmp_path: Path) -> None:
     """Would catch a preview run being mistaken for a delivered digest."""
     from ai_daily.pipeline import RunOptions
@@ -280,6 +482,73 @@ def test_preview_writes_all_artifacts_without_creating_a_sent_marker(tmp_path: P
     assert (tmp_path / "output" / "preview" / "cost-report.json").exists()
     assert store.load_run_state() == RunState()
     assert mailer.calls == 0
+    assert result.delivery_outcome == "not_attempted"
+
+
+def test_normal_run_result_reports_metrics_from_pipeline_boundaries(tmp_path: Path) -> None:
+    """Would catch daily observability being reconstructed from logs instead of typed results."""
+    from ai_daily.pipeline import RunOptions
+
+    result = make_pipeline(tmp_path, sources=[object(), object()]).run(
+        RunOptions(send=False, ai_mode="full")
+    )
+
+    assert result.source_successes == 2
+    assert result.source_total == 2
+    assert result.source_success_rate == 100.0
+    assert result.news_candidate_count == 1
+    assert result.final_news_count == 1
+    assert result.repository_count == 1
+    assert result.github_status == "current"
+    assert result.github_data_date == "2026-08-24"
+    assert result.effective_ai_mode == "full"
+    assert result.ai_call_count == 1
+    assert result.token_usage_complete is True
+    assert result.cost_is_lower_bound is False
+    assert result.input_cache_hit_tokens == 0
+    assert result.input_cache_miss_tokens == 0
+    assert result.output_tokens == 10
+    assert result.cost_currency == "USD"
+    assert result.estimated_cost == Decimal("0.000010")
+    assert result.thirty_day_projection == Decimal("0.000300")
+
+
+def test_render_failure_preserves_completed_boundary_metrics_and_releases_intent(
+    tmp_path: Path,
+) -> None:
+    """Would catch pre-mail artifact failure erasing source, AI, cost, or warning observability."""
+    from ai_daily.pipeline import RunOptions
+    from ai_daily.render import render_digest
+
+    store = StateStore(tmp_path / "data")
+    store.reserve_delivery("2026-08-24", "gh-100-1", ATTEMPT_TIME)
+
+    def fail_after_render_inputs(*args: object) -> RenderedDigest:
+        render_digest(*args)  # type: ignore[arg-type]
+        raise OSError("simulated artifact boundary failure")
+
+    pipeline = make_pipeline(
+        tmp_path,
+        store=store,
+        registry=FixedRegistry([item()], ["one-source: HTTP 503"]),
+        sources=[object()],
+        renderer=fail_after_render_inputs,
+    )
+
+    with pytest.raises(OSError, match="simulated artifact boundary failure"):
+        pipeline.run(RunOptions(send=True, attempt_id="gh-100-1"))
+
+    result = pipeline.last_result
+    assert result.delivery_outcome == "not_attempted"
+    assert result.warnings == ["one-source: HTTP 503"]
+    assert result.source_successes == 0
+    assert result.news_candidate_count == 1
+    assert result.final_news_count == 1
+    assert result.repository_count == 1
+    assert result.ai_call_count == 1
+    assert result.output_tokens == 10
+    assert result.estimated_cost == Decimal("0.000010")
+    assert store.load_run_state().delivery_intents == {}
 
 
 def test_source_failure_warning_does_not_block_usable_news_and_github(tmp_path: Path) -> None:
@@ -289,9 +558,34 @@ def test_source_failure_warning_does_not_block_usable_news_and_github(tmp_path: 
     result = make_pipeline(
         tmp_path,
         registry=FixedRegistry([item()], ["broken-source: HTTP 503"]),
+        sources=[object(), object()],
     ).run(RunOptions())
 
     assert result.warnings == ["broken-source: HTTP 503"]
+    assert (result.source_successes, result.source_total, result.source_success_rate) == (
+        1,
+        2,
+        50.0,
+    )
+
+
+def test_source_success_metrics_use_collector_outcomes_not_warning_count(tmp_path: Path) -> None:
+    """Would catch unrelated diagnostics being misclassified as failed source executions."""
+    from ai_daily.pipeline import RunOptions
+
+    result = make_pipeline(
+        tmp_path,
+        registry=FixedRegistry(
+            [item()],
+            ["safe collector diagnostic"],
+            source_successes=2,
+        ),
+        sources=[object(), object()],
+    ).run(RunOptions())
+
+    assert result.source_successes == 2
+    assert result.source_total == 2
+    assert result.source_success_rate == 100.0
 
 
 def test_pipeline_applies_configured_news_score_threshold(tmp_path: Path) -> None:
@@ -340,6 +634,8 @@ def test_ai_enrichment_error_falls_back_but_preserves_paid_usage_and_cost(tmp_pa
     assert result.warnings == ["AI enrichment failed; deterministic fallback used"]
     assert result.estimated_cost == Decimal("0.000010")
     assert result.usage == failed_usage
+    assert result.effective_ai_mode == "off"
+    assert result.ai_call_count == 2
     report = json.loads((tmp_path / "output" / "preview" / "cost-report.json").read_text("utf-8"))
     assert report["usage"] == [
         {
@@ -356,23 +652,29 @@ def test_ai_enrichment_error_falls_back_but_preserves_paid_usage_and_cost(tmp_pa
 
 
 @pytest.mark.parametrize(
-    "github_usage",
+    ("github_usage", "expected_input_miss"),
     [
-        {
-            "prompt_tokens": "usage-sk-secret-must-not-survive",
-            "completion_tokens": 7,
-        },
-        {
-            "prompt_cache_hit_tokens": 0,
-            "prompt_tokens": 23,
-            "prompt_tokens_details": ["usage-sk-secret-must-not-survive"],
-            "completion_tokens": 7,
-        },
+        (
+            {
+                "prompt_tokens": "usage-sk-secret-must-not-survive",
+                "completion_tokens": 7,
+            },
+            17,
+        ),
+        (
+            {
+                "prompt_cache_hit_tokens": 0,
+                "prompt_tokens": 23,
+                "prompt_tokens_details": ["usage-sk-secret-must-not-survive"],
+                "completion_tokens": 7,
+            },
+            40,
+        ),
     ],
     ids=["malformed-token", "malformed-detail-container"],
 )
 def test_malformed_github_usage_falls_back_with_known_lower_bound_and_no_secret(
-    tmp_path: Path, github_usage: dict[str, object]
+    tmp_path: Path, github_usage: dict[str, object], expected_input_miss: int
 ) -> None:
     """Would catch later malformed usage losing calls, known cost, or deterministic fallback."""
     from ai_daily.pipeline import RunOptions
@@ -440,6 +742,11 @@ def test_malformed_github_usage_falls_back_with_known_lower_bound_and_no_secret(
     ]
     assert result.usage[1].output_tokens == 7
     assert result.estimated_cost == Decimal("0.000012")
+    assert result.ai_call_count == 2
+    assert result.token_usage_complete is False
+    assert result.cost_is_lower_bound is True
+    assert result.input_cache_miss_tokens == expected_input_miss
+    assert result.output_tokens == 12
     archive = result.markdown_path.read_text("utf-8") if result.markdown_path else ""
     assert "事件概述：" in archive
     assert "项目概览：" in archive
@@ -470,6 +777,8 @@ def test_github_transport_failure_uses_newest_cached_snapshot_and_exposes_date(t
     assert result.warnings == ["GitHub data unavailable; using cached snapshot from 2026-08-23"]
     assert result.markdown_path and "owner/repo" in result.markdown_path.read_text("utf-8")
     assert "2026-08-23" in result.markdown_path.read_text("utf-8")
+    assert result.github_status == "cached"
+    assert result.github_data_date == "2026-08-23"
 
 
 def test_malformed_github_search_data_uses_cached_snapshot(tmp_path: Path) -> None:
@@ -621,20 +930,26 @@ def test_no_usable_sections_fails_before_render_or_send(tmp_path: Path) -> None:
     def unavailable(*_: object) -> list[str]:
         raise httpx.ConnectError("offline")
 
+    pipeline = make_pipeline(
+        tmp_path,
+        registry=FixedRegistry([], ["all sources unavailable"]),
+        discover=unavailable,
+        mailer=mailer,
+    )
     with pytest.raises(NoUsableDigestDataError):
-        make_pipeline(
-            tmp_path,
-            registry=FixedRegistry([], ["all sources unavailable"]),
-            discover=unavailable,
-            mailer=mailer,
-        ).run(RunOptions(send=True))
+        pipeline.run(RunOptions(send=True))
 
     assert mailer.calls == 0
+    assert pipeline.last_result.warnings == [
+        "all sources unavailable",
+        "GitHub data unavailable; no cached snapshot used",
+    ]
+    assert pipeline.last_result.github_status == "unavailable"
     assert not (tmp_path / "output").exists()
 
 
-def test_mail_failure_leaves_marker_absent_for_later_successful_compensation(tmp_path: Path) -> None:
-    """Would catch a failed mail request consuming the date-based retry opportunity."""
+def test_mail_failure_leaves_marker_absent_and_intent_ambiguous(tmp_path: Path) -> None:
+    """Would catch an uncertain mail request being exposed as definitely retryable."""
     from ai_daily.pipeline import RunOptions
 
     store = StateStore(tmp_path / "data")
@@ -645,10 +960,7 @@ def test_mail_failure_leaves_marker_absent_for_later_successful_compensation(tmp
         pipeline.run(RunOptions(send=True))
 
     assert store.load_run_state().sent_dates == {}
-    mailer.response = "accepted-on-compensation"
-    result = pipeline.run(RunOptions(send=True))
-    assert result.sent is True
-    assert store.load_run_state().sent_dates == {"2026-08-24": "accepted-on-compensation"}
+    assert store.load_run_state().delivery_intents["2026-08-24"].status == "ambiguous"
 
 
 def test_state_and_pruning_follow_accepted_mail_in_exact_order(tmp_path: Path) -> None:
@@ -656,12 +968,28 @@ def test_state_and_pruning_follow_accepted_mail_in_exact_order(tmp_path: Path) -
     from ai_daily.pipeline import RunOptions
 
     store = RecordingStore(tmp_path / "data")
-    mailer = RecordingMailer()
+
+    class OrderedMailer(RecordingMailer):
+        def send(self, rendered: RenderedDigest) -> str:
+            store.events.append("mail")
+            return super().send(rendered)
+
+    mailer = OrderedMailer()
     pipeline = make_pipeline(tmp_path, store=store, mailer=mailer)
 
     pipeline.run(RunOptions(send=True))
 
-    assert store.events == ["load-state", "save-snapshot", "save-state", "prune"]
+    assert store.events == [
+        "load-state",
+        "load-state",
+        "save-state",
+        "load-state",
+        "save-snapshot",
+        "save-state",
+        "mail",
+        "save-state",
+        "prune",
+    ]
     assert mailer.calls == 1
 
 
@@ -670,15 +998,26 @@ def test_pruning_does_not_run_when_state_write_fails_after_accepted_mail(tmp_pat
     from ai_daily.pipeline import RunOptions
 
     class FailingStore(RecordingStore):
+        def __init__(self, data_dir: Path) -> None:
+            super().__init__(data_dir)
+            self.saves = 0
+
         def save_run_state(self, state: RunState) -> None:
             self.events.append("save-state")
-            raise OSError("disk full")
+            self.saves += 1
+            if self.saves == 2:
+                raise OSError("disk full")
+            StateStore.save_run_state(self, state)
 
-    store = FailingStore(tmp_path / "data")
+    data_dir = tmp_path / "data"
+    StateStore(data_dir).reserve_delivery("2026-08-24", "gh-100-1", ATTEMPT_TIME)
+    store = FailingStore(data_dir)
     with pytest.raises(OSError, match="disk full"):
-        make_pipeline(tmp_path, store=store).run(RunOptions(send=True))
+        make_pipeline(tmp_path, store=store).run(
+            RunOptions(send=True, attempt_id="gh-100-1")
+        )
 
-    assert store.events == ["load-state", "save-snapshot", "save-state"]
+    assert store.events == ["load-state", "save-snapshot", "save-state", "save-state"]
 
 
 def test_output_paths_are_atomic_and_cost_report_contains_only_safe_allowlisted_data(
@@ -714,7 +1053,19 @@ def test_output_paths_are_atomic_and_cost_report_contains_only_safe_allowlisted_
         "total",
         "thirty_day_projection",
         "is_complete",
+        "ai_call_count",
+        "token_usage_complete",
+        "cost_is_lower_bound",
+        "known_tokens",
         "usage",
+    }
+    assert report["ai_call_count"] == 1
+    assert report["token_usage_complete"] is True
+    assert report["cost_is_lower_bound"] is False
+    assert report["known_tokens"] == {
+        "input_cache_hit": 0,
+        "input_cache_miss": 0,
+        "output": 10,
     }
     assert set(report["usage"][0]) == {
         "stage",

@@ -30,6 +30,8 @@ jobs:
   daily:
     if: github.event_name != 'schedule' || vars.AI_DAILY_SCHEDULE_ENABLED == 'true'
     runs-on: ubuntu-latest
+    env:
+      AI_DAILY_ATTEMPT_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
@@ -38,7 +40,38 @@ jobs:
           cache: pip
       - run: python -m pip install --requirement requirements-prod.lock
       - run: python -m pip install --no-deps --no-build-isolation -e .
+      - name: Reserve delivery intent
+        id: reserve
+        if: github.event_name != 'workflow_dispatch' || inputs.send == true
+        run: |
+          force_arg=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+            force_arg="--force"
+          fi
+          ai-daily reserve-delivery --attempt-id "${AI_DAILY_ATTEMPT_ID}" ${force_arg}
+      - name: Commit reserved intent
+        if: steps.reserve.outputs.reservation_status == 'reserved'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git add -- data/state.json
+          if git diff --cached --quiet; then
+            echo "Reservation already durable."
+            exit 0
+          fi
+          if git diff --cached --name-only | grep -Ev '^data/state\.json$' >/dev/null; then
+            echo "Refusing to commit an unexpected reservation path." >&2
+            exit 1
+          fi
+          git commit -m "chore: reserve AI daily delivery"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
       - name: Run daily digest
+        id: digest
+        if: >-
+          (github.event_name == 'workflow_dispatch' && inputs.send != true) ||
+          steps.reserve.outputs.reservation_status == 'reserved' ||
+          steps.reserve.outputs.reservation_status == 'already_sent'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
@@ -49,15 +82,43 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             if [ "${{ inputs.send }}" = "true" ]; then
-              ai-daily run --send --ai-mode "${{ inputs.mode }}" ${{ inputs.force && '--force' || '' }}
+              ai-daily run --send --attempt-id "${AI_DAILY_ATTEMPT_ID}" --ai-mode "${{ inputs.mode }}" ${{ inputs.force && '--force' || '' }}
             else
               ai-daily preview --ai-mode "${{ inputs.mode }}" ${{ inputs.force && '--force' || '' }}
             fi
           else
-            ai-daily run --send
+            ai-daily run --send --attempt-id "${AI_DAILY_ATTEMPT_ID}"
           fi
-      - name: Commit durable state
-        if: github.event_name != 'workflow_dispatch' || inputs.send == true
+      - name: Release unattempted intent
+        id: cleanup
+        if: >-
+          always() &&
+          steps.reserve.outputs.reservation_status == 'reserved' &&
+          steps.digest.outcome == 'failure' &&
+          steps.digest.outputs.delivery_outcome == 'not_attempted'
+        run: ai-daily release-delivery --attempt-id "${AI_DAILY_ATTEMPT_ID}"
+      - name: Commit unattempted cleanup
+        if: always() && steps.cleanup.outcome == 'success'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git add -- data/state.json
+          if git diff --cached --quiet; then
+            echo "No cleanup state changes to commit."
+            exit 0
+          fi
+          if git diff --cached --name-only | grep -Ev '^data/state\.json$' >/dev/null; then
+            echo "Refusing to commit an unexpected cleanup path." >&2
+            exit 1
+          fi
+          git commit -m "chore: release unattempted AI daily delivery"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
+      - name: Commit accepted state
+        if: >-
+          always() &&
+          steps.digest.outcome == 'success' &&
+          steps.digest.outputs.delivery_outcome == 'accepted'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
