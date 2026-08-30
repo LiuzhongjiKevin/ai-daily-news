@@ -1,5 +1,8 @@
+import multiprocessing
+import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -8,6 +11,113 @@ from ai_daily.models import RepoSnapshot, RunState
 from ai_daily.state import StateStore
 
 INTENT_TIME = datetime(2026, 8, 24, 6, 0, tzinfo=timezone(timedelta(hours=8)))
+
+
+class _PausingStateStore(StateStore):
+    """Test helper that exposes the stale-read window without production hooks."""
+
+    def __init__(
+        self,
+        data_dir: Path,
+        loaded: Any,
+        resume: Any,
+    ) -> None:
+        super().__init__(data_dir)
+        self.loaded = loaded
+        self.resume = resume
+
+    def load_run_state(self) -> RunState:
+        state = super().load_run_state()
+        self.loaded.set()
+        if not self.resume.wait(5):
+            raise RuntimeError("test reservation barrier timed out")
+        return state
+
+
+def _reserve_in_process(
+    data_dir: Path,
+    attempt_id: str,
+    output: Any,
+    *,
+    loaded: Any | None = None,
+    resume: Any | None = None,
+    started: Any | None = None,
+) -> None:
+    from ai_daily.state import DeliveryIntentConflictError
+
+    if started is not None:
+        started.set()
+    store = (
+        _PausingStateStore(data_dir, loaded, resume)
+        if loaded is not None and resume is not None
+        else StateStore(data_dir)
+    )
+    try:
+        result = store.reserve_delivery("2026-08-24", attempt_id, INTENT_TIME)
+    except DeliveryIntentConflictError:
+        result = "conflict"
+    except Exception as error:  # noqa: BLE001 - report child-process type, never its message.
+        result = f"unexpected-{type(error).__name__}"
+    output.put((attempt_id, result))
+
+
+def _release_in_process(
+    data_dir: Path,
+    output: Any,
+    *,
+    loaded: Any,
+    resume: Any,
+) -> None:
+    store = _PausingStateStore(data_dir, loaded, resume)
+    try:
+        result = store.release_delivery("2026-08-24", "gh-100-1")
+    except Exception as error:  # noqa: BLE001 - report child-process type, never its message.
+        result = f"unexpected-{type(error).__name__}"
+    output.put(("release", result))
+
+
+def _resolve_in_process(data_dir: Path, output: Any, started: Any) -> None:
+    from ai_daily.state import DeliveryResolutionError
+
+    started.set()
+    try:
+        result = StateStore(data_dir).resolve_delivery(
+            "2026-08-24", "sent", "sha256-concurrent-resolution"
+        )
+    except DeliveryResolutionError:
+        result = "resolution-error"
+    except Exception as error:  # noqa: BLE001 - report child-process type, never its message.
+        result = f"unexpected-{type(error).__name__}"
+    output.put(("resolve", result))
+
+
+def _join_processes(processes: list[Any]) -> None:
+    for process in processes:
+        process.join(5)
+    hanging = [process for process in processes if process.is_alive()]
+    for process in hanging:
+        process.terminate()
+        process.join(5)
+    assert not hanging, "delivery transaction test process hung"
+    assert [process.exitcode for process in processes] == [0] * len(processes)
+
+
+class _CrashingStateStore(StateStore):
+    def __init__(self, data_dir: Path, loaded: Any) -> None:
+        super().__init__(data_dir)
+        self.loaded = loaded
+
+    def load_run_state(self) -> RunState:
+        state = super().load_run_state()
+        self.loaded.set()
+        os._exit(23)
+        return state  # pragma: no cover - documents the overridden return contract.
+
+
+def _crash_during_reservation(data_dir: Path, loaded: Any) -> None:
+    _CrashingStateStore(data_dir, loaded).reserve_delivery(
+        "2026-08-24", "gh-100-1", INTENT_TIME
+    )
 
 
 def test_state_round_trip_is_atomic(tmp_path: Path) -> None:
@@ -80,6 +190,127 @@ def test_reservation_is_atomic_idempotent_and_owned(tmp_path: Path) -> None:
         store.reserve_delivery("2026-08-24", "gh-200-1", INTENT_TIME)
 
     assert store.load_run_state().delivery_intents["2026-08-24"] == intent
+
+
+def test_competing_processes_cannot_both_commit_delivery_reservations(
+    tmp_path: Path,
+) -> None:
+    """Would catch two processes reading no intent and both reporting reservation success."""
+    context = multiprocessing.get_context("spawn")
+    loaded = context.Event()
+    resume = context.Event()
+    second_started = context.Event()
+    output = context.Queue()
+    first = context.Process(
+        target=_reserve_in_process,
+        args=(tmp_path, "gh-100-1", output),
+        kwargs={"loaded": loaded, "resume": resume},
+    )
+    second = context.Process(
+        target=_reserve_in_process,
+        args=(tmp_path, "gh-200-1", output),
+        kwargs={"started": second_started},
+    )
+
+    first.start()
+    assert loaded.wait(5), "first process did not reach the controlled stale read"
+    second.start()
+    assert second_started.wait(5), "second process did not start"
+    resume.set()
+    _join_processes([first, second])
+
+    outcomes = sorted(output.get(timeout=2)[1] for _ in range(2))
+    assert outcomes == ["conflict", "reserved"]
+    intent = StateStore(tmp_path).load_run_state().delivery_intents["2026-08-24"]
+    assert intent.attempt_id in {"gh-100-1", "gh-200-1"}
+
+
+def test_delivery_lock_wait_is_bounded_instead_of_hanging(tmp_path: Path) -> None:
+    """Would catch a stalled process blocking an operator command indefinitely."""
+    from ai_daily.state import DeliveryStateError
+
+    context = multiprocessing.get_context("spawn")
+    loaded = context.Event()
+    resume = context.Event()
+    output = context.Queue()
+    holder = context.Process(
+        target=_reserve_in_process,
+        args=(tmp_path, "gh-100-1", output),
+        kwargs={"loaded": loaded, "resume": resume},
+    )
+    holder.start()
+    assert loaded.wait(5), "holder did not reach the controlled transaction"
+    try:
+        with pytest.raises(DeliveryStateError, match="busy"):
+            StateStore(
+                tmp_path,
+                delivery_lock_timeout=0.05,
+                delivery_lock_poll_interval=0.005,
+            ).reserve_delivery("2026-08-24", "gh-200-1", INTENT_TIME)
+    finally:
+        resume.set()
+        _join_processes([holder])
+
+
+def test_process_crash_releases_os_lock_even_when_lock_file_remains(tmp_path: Path) -> None:
+    """Would catch a dead process leaving a stale lock artifact that blocks recovery."""
+    context = multiprocessing.get_context("spawn")
+    loaded = context.Event()
+    process = context.Process(target=_crash_during_reservation, args=(tmp_path, loaded))
+
+    process.start()
+    assert loaded.wait(5), "crashing process did not acquire the delivery transaction"
+    process.join(5)
+    if process.is_alive():
+        process.terminate()
+        process.join(5)
+        pytest.fail("crashing delivery process hung")
+
+    assert process.exitcode == 23
+    assert (tmp_path / "state.json.lock").exists()
+    assert (
+        StateStore(tmp_path, delivery_lock_timeout=0.2).reserve_delivery(
+            "2026-08-24", "gh-200-1", INTENT_TIME
+        )
+        == "reserved"
+    )
+
+
+def test_release_and_resolution_cannot_commit_from_the_same_stale_intent(
+    tmp_path: Path,
+) -> None:
+    """Would catch concurrent cleanup erasing an operator's sent resolution or both succeeding."""
+    StateStore(tmp_path).reserve_delivery("2026-08-24", "gh-100-1", INTENT_TIME)
+    context = multiprocessing.get_context("spawn")
+    loaded = context.Event()
+    resume = context.Event()
+    resolve_started = context.Event()
+    output = context.Queue()
+    release = context.Process(
+        target=_release_in_process,
+        args=(tmp_path, output),
+        kwargs={"loaded": loaded, "resume": resume},
+    )
+    resolve = context.Process(
+        target=_resolve_in_process,
+        args=(tmp_path, output, resolve_started),
+    )
+
+    release.start()
+    assert loaded.wait(5), "release did not reach the controlled stale read"
+    resolve.start()
+    assert resolve_started.wait(5), "resolution process did not start"
+    resume.set()
+    _join_processes([release, resolve])
+
+    assert sorted(output.get(timeout=2) for _ in range(2)) == [
+        ("release", "released"),
+        ("resolve", "resolution-error"),
+    ]
+    state = StateStore(tmp_path).load_run_state()
+    assert state.delivery_intents == {}
+    assert state.sent_dates == {}
+
 
 
 def test_known_sent_date_is_not_reserved_without_intentional_force(tmp_path: Path) -> None:

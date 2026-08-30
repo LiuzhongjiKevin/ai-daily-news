@@ -14,7 +14,7 @@
 
 1. 在 Actions 的 **Run workflow** 中先选择 `mode=off`、`send=false`，或本机执行 `ai-daily preview --ai-mode off`。这只生成 `preview/` 与 Markdown 存档，绝不会发邮件。它是零成本的功能检查，**不是**全量模型成本证据。
 2. 随后必须手动运行一次 `mode=full`、`send=false`（或 `ai-daily preview --ai-mode full`），再审阅 `preview/cost-report.json` 的实际输入、缓存命中、缓存未命中、输出 Token、当前成本与 30 天投影；这一步才是**首次运行成本审阅**。`full` 有完整 AI 选择/总结，`economy` 保留更多固定候选并减少工作，`off` 不调用模型且成本为零。
-3. 只有完整模式的无发送预览、内容和成本均审核通过后，才手动运行一次 `mode=full`、`send=true`。检查 Graph 接受结果、邮箱、`digests/`、`data/` 和加密缓存更新。
+3. 只有完整模式的无发送预览、内容和成本均审核通过后，才在**默认分支**手动运行一次 `mode=full`、`send=true`。检查 Graph 接受结果、邮箱、`digests/`、`data/` 和加密缓存更新。功能分支可安全运行 `send=false` 预览，但 `send=true` 会被工作流门控跳过，不能建立另一套分支隔离的 sent/intent 状态。
 4. 同日再次运行将是 already-sent no-op；只在已知上一封已完成、且确实需要重发时使用 `force=true`。`force` 不能覆盖投递状态不明的 intent。主任务与 07:22 补偿任务由并发锁串行执行；补偿任务只会自动重试能够证明 Graph 尚未被调用的失败。
 5. 初次推送时，`AI_DAILY_SCHEDULE_ENABLED` 缺失即视为关闭，两个 Asia/Shanghai 定时任务不会发送。完成成本审阅后，在仓库 **Settings → Secrets and variables → Actions → Variables** 新建或编辑变量 `AI_DAILY_SCHEDULE_ENABLED`，值严格设为 `true`，才启用计划。要立即禁用，改为 `false` 或删除该变量；手动 `workflow_dispatch` 不受此门控影响。
 

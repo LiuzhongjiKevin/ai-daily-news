@@ -23,12 +23,15 @@ permissions:
   contents: write
 
 concurrency:
-  group: ai-daily-${{ github.ref }}
+  group: ai-daily-delivery
   cancel-in-progress: false
 
 jobs:
   daily:
-    if: github.event_name != 'schedule' || vars.AI_DAILY_SCHEDULE_ENABLED == 'true'
+    if: >-
+      (github.event_name != 'schedule' || vars.AI_DAILY_SCHEDULE_ENABLED == 'true') &&
+      ((github.event_name == 'workflow_dispatch' && inputs.send != true) ||
+      github.ref_name == github.event.repository.default_branch)
     runs-on: ubuntu-latest
     env:
       AI_DAILY_ATTEMPT_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}

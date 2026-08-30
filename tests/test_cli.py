@@ -123,7 +123,7 @@ def test_validate_sources_threshold_writes_redacted_markdown_summary(
     assert "<redacted-email>" in summary.read_text(encoding="utf-8")
     assert "reader@example.test" not in output
     summary_text = summary.read_text(encoding="utf-8")
-    assert "<redacted>" in summary_text
+    assert "<redacted-oauth-diagnostic>" in summary_text
     assert secret not in summary_text
     assert "reader@example.test" not in summary_text
     assert "oauth-value" not in summary_text
@@ -386,6 +386,45 @@ def test_run_appends_complete_sanitized_github_summary(
     assert "oauth-value" not in content
     assert "public-client" not in content
     assert "id-value" not in content
+
+
+def test_summary_replaces_hostile_quoted_oauth_json_diagnostics(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Would catch quoted or escaped JSON OAuth values outgrowing token-style redaction."""
+    from ai_daily.cli import main
+
+    secrets = (
+        "access secret with spaces,comma-tail",
+        "refresh-secret-after-comma",
+        "client-secret-value",
+        "public-client-value",
+        "bearer-secret.with.parts",
+        "escaped access secret",
+    )
+    result = FakeResult(
+        warnings=[
+            (
+                '{"error":{"access_token":"access secret with spaces,comma-tail",'
+                '"refresh_token":"refresh-secret-after-comma",'
+                '"client_secret":"client-secret-value",'
+                '"client_id":"public-client-value",'
+                '"authorization":"Bearer bearer-secret.with.parts"},'
+                '"contact":"json-reader@example.test"}'
+            ),
+            r'{\"access_token\":\"escaped access secret\"}',
+        ]
+    )
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr("ai_daily.cli.build_pipeline", lambda: FakePipeline(result))
+
+    assert main(["preview", "--ai-mode", "off"]) == 0
+    content = summary.read_text("utf-8")
+    assert content.count("<redacted-oauth-diagnostic>") == 2
+    for secret in secrets:
+        assert secret not in content
+    assert "json-reader@example.test" not in content
 
 
 def test_ambiguous_failure_still_appends_typed_run_summary(

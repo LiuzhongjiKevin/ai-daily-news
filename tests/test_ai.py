@@ -478,6 +478,27 @@ def test_wraps_api_failures_without_exposing_provider_message() -> None:
     assert len(client.calls) == 1
 
 
+def test_initial_transport_failure_counts_the_paid_attempt_as_incomplete() -> None:
+    """Would catch a provider create attempt disappearing when no response usage is returned."""
+    client = FixtureClient([RuntimeError("provider lost response with sk-secret")])
+
+    with pytest.raises(AIEnrichmentError, match="request failed") as error:
+        AIEnricher(client, settings()).enrich([news_cluster()], [], mode="full")
+
+    assert [record.model_dump() for record in error.value.usage] == [
+        {
+            "stage": "news",
+            "model": "deepseek-v4-flash",
+            "call_count": 1,
+            "input_cache_hit_tokens": 0,
+            "input_cache_miss_tokens": 0,
+            "output_tokens": 0,
+            "is_complete": False,
+        }
+    ]
+    assert "sk-secret" not in "".join(traceback.format_exception(error.value))
+
+
 def test_api_failure_does_not_retain_secret_in_exception_chain_or_traceback() -> None:
     """Would catch provider secrets surviving in the wrapped exception context or traceback."""
     client = FixtureClient([RuntimeError("provider rejected sk-secret")])
@@ -542,9 +563,10 @@ def test_transport_failure_after_paid_invalid_response_preserves_usage() -> None
     with pytest.raises(AIEnrichmentError, match="request failed") as error:
         AIEnricher(client, settings()).enrich([news_cluster()], [], mode="full")
 
-    assert error.value.usage[0].call_count == 1
+    assert error.value.usage[0].call_count == 2
     assert error.value.usage[0].input_cache_miss_tokens == 13
     assert error.value.usage[0].output_tokens == 4
+    assert error.value.usage[0].is_complete is False
     assert "sk-secret" not in "".join(traceback.format_exception(error.value))
 
 
@@ -563,7 +585,10 @@ def test_later_section_failure_carries_usage_from_the_successful_news_section() 
     with pytest.raises(AIEnrichmentError) as error:
         AIEnricher(client, settings()).enrich([news_cluster()], [ranked_repo()], mode="full")
 
-    assert [(record.stage, record.call_count) for record in error.value.usage] == [("news", 1)]
+    assert [
+        (record.stage, record.call_count, record.is_complete)
+        for record in error.value.usage
+    ] == [("news", 1, True), ("github", 1, False)]
     assert error.value.usage[0].input_cache_miss_tokens == 17
 
 

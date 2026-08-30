@@ -86,6 +86,32 @@ def test_scheduled_delivery_requires_explicit_repository_variable_gate() -> None
     assert "vars.AI_DAILY_SCHEDULE_ENABLED == 'true'" in gate
 
 
+def test_delivery_dispatch_is_default_branch_only_but_preview_remains_branch_safe() -> None:
+    """Would catch a feature-branch manual send using state isolated from scheduled delivery."""
+    workflow = load_workflow("daily.yml")
+    gate = workflow["jobs"]["daily"]["if"]
+
+    assert "github.ref_name == github.event.repository.default_branch" in gate
+    assert "github.event_name == 'workflow_dispatch' && inputs.send != true" in gate
+
+
+def test_daily_delivery_concurrency_is_shared_across_all_repository_refs() -> None:
+    """Would catch branch-scoped locks allowing two refs to reserve/send the same date."""
+    concurrency = load_workflow("daily.yml")["concurrency"]
+
+    assert concurrency == {
+        "group": "ai-daily-delivery",
+        "cancel-in-progress": False,
+    }
+
+
+def test_persistent_delivery_lock_artifact_is_excluded_from_git_state_commits() -> None:
+    """Would catch the OS lock file being staged by the workflow's restricted data commit."""
+    ignored = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+    assert "data/state.json.lock" in ignored
+
+
 def test_daily_persists_durable_state_before_nonessential_artifact_upload() -> None:
     """Would catch an artifact outage preventing the sent marker from being committed after send."""
     workflow = load_workflow("daily.yml")

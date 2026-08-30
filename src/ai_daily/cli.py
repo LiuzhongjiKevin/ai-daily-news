@@ -37,8 +37,7 @@ _SUMMARY_SECRET_NAMES = ("DEEPSEEK_API_KEY", *_SEND_SECRETS, "GITHUB_TOKEN")
 _EMAIL_PATTERN = re.compile(r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _OAUTH_FIELD_PATTERN = re.compile(
     r"\b(?:access_token|refresh_token|id_token|client_secret|client_id|token_type|"
-    r"expires_in|authorization|bearer)\b"
-    r"\s*[:=]?\s*[^\s|,;]+",
+    r"expires_in|authorization|bearer)\b",
     re.IGNORECASE,
 )
 
@@ -160,12 +159,15 @@ def _write_step_output(name: str, value: str) -> None:
 
 def _sanitize_summary_warning(value: object) -> str:
     text = " ".join(str(value).split())
+    if _OAUTH_FIELD_PATTERN.search(text):
+        # Free-form provider JSON is not a trusted diagnostic shape. A fixed marker is safer
+        # than trying to parse every quoting, escaping, whitespace, or delimiter variant.
+        return "<redacted-oauth-diagnostic>"
     for name in _SUMMARY_SECRET_NAMES:
         secret = os.environ.get(name)
         if secret:
             text = text.replace(secret, "<redacted>")
     text = _EMAIL_PATTERN.sub("<redacted-email>", text)
-    text = _OAUTH_FIELD_PATTERN.sub("<redacted-oauth-field>", text)
     return text.replace("|", "\\|")[:300]
 
 

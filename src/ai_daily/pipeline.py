@@ -384,21 +384,29 @@ class DailyPipeline:
             message_id: str | None = None
             if options.send:
                 assert owned_attempt is not None
-                intent = state.delivery_intents[local_date]
-                intent.status = "ambiguous"
-                self.state_store.save_run_state(state)
+                try:
+                    self.state_store.mark_delivery_ambiguous(local_date, owned_attempt)
+                except DeliveryIntentConflictError as error:
+                    raise DeliveryAmbiguousError(
+                        "Delivery ownership changed before the mail boundary"
+                    ) from error
                 self.delivery_outcome = "ambiguous"
                 result.delivery_outcome = "ambiguous"
                 message_id = self.mailer.send(rendered)
                 self.delivery_outcome = "accepted"
                 result.delivery_outcome = "accepted"
                 result.message_id = message_id
-                state.sent_dates[local_date] = message_id
-                state.last_success_at = local_now
-                if state.delivery_intents[local_date].attempt_id != owned_attempt:
-                    raise DeliveryAmbiguousError("Delivery ownership changed before commit")
-                del state.delivery_intents[local_date]
-                self.state_store.save_run_state(state)
+                try:
+                    self.state_store.complete_delivery(
+                        local_date,
+                        owned_attempt,
+                        message_id,
+                        local_now,
+                    )
+                except DeliveryIntentConflictError as error:
+                    raise DeliveryAmbiguousError(
+                        "Delivery ownership changed before the accepted-state commit"
+                    ) from error
                 self.state_store.prune_snapshots(
                     local_now.date(), self.settings.snapshot_retention_days
                 )

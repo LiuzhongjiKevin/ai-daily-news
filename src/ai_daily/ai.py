@@ -438,9 +438,16 @@ class AIEnricher:
                     max_tokens=self.settings.ai_max_output_tokens,
                 )
             except Exception as error:  # noqa: BLE001 - client implementations expose no shared error base.
-                accumulated = [_aggregate_usage(usage_records)] if usage_records else []
+                usage_records.append(
+                    UsageRecord(
+                        stage=stage,
+                        model=self.settings.ai_model,
+                        is_complete=False,
+                    )
+                )
                 request_error = AIEnrichmentError(
-                    "AI enrichment request failed", usage=accumulated
+                    "AI enrichment request failed",
+                    usage=[_aggregate_usage(usage_records)],
                 )
                 del error
             if request_error is not None:

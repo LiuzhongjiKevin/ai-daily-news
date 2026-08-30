@@ -146,9 +146,9 @@ class RecordingStore(StateStore):
         self.events.append("save-snapshot")
         return super().save_snapshot(day, snapshots)
 
-    def save_run_state(self, state: RunState) -> None:
+    def _save_run_state_unlocked(self, state: RunState) -> None:
         self.events.append("save-state")
-        super().save_run_state(state)
+        super()._save_run_state_unlocked(state)
 
     def prune_snapshots(self, today: date, retention_days: int) -> list[Path]:
         self.events.append("prune")
@@ -387,6 +387,38 @@ def test_local_send_durably_reserves_before_mail_call(tmp_path: Path) -> None:
     assert store.load_run_state().delivery_intents == {}
 
 
+def test_send_reloads_and_persists_matching_owner_immediately_before_mail(
+    tmp_path: Path,
+) -> None:
+    """Would catch a stale pipeline snapshot overwriting a newly reserved owner before Graph."""
+    from ai_daily.pipeline import DeliveryAmbiguousError, RunOptions
+
+    store = StateStore(tmp_path / "data")
+    store.reserve_delivery("2026-08-24", "gh-100-1", ATTEMPT_TIME)
+    mailer = RecordingMailer()
+
+    def replace_owner_before_mail(*args: object) -> RenderedDigest:
+        rendered = render_digest(*args)  # type: ignore[arg-type]
+        store.resolve_delivery("2026-08-24", "retry")
+        store.reserve_delivery("2026-08-24", "gh-200-1", ATTEMPT_TIME)
+        return rendered
+
+    pipeline = make_pipeline(
+        tmp_path,
+        store=store,
+        mailer=mailer,
+        renderer=replace_owner_before_mail,
+    )
+
+    with pytest.raises(DeliveryAmbiguousError):
+        pipeline.run(RunOptions(send=True, attempt_id="gh-100-1"))
+
+    assert mailer.calls == 0
+    intent = store.load_run_state().delivery_intents["2026-08-24"]
+    assert intent.attempt_id == "gh-200-1"
+    assert intent.status == "reserved"
+
+
 def test_pre_mail_failure_releases_owned_reservation_as_not_attempted(tmp_path: Path) -> None:
     """Would catch deterministic generation failure needlessly blocking safe compensation."""
     from ai_daily.pipeline import RunOptions
@@ -449,11 +481,11 @@ def test_graph_acceptance_then_state_failure_remains_ambiguous_on_disk(tmp_path:
             super().__init__(path)
             self.saves = 0
 
-        def save_run_state(self, state: RunState) -> None:
+        def _save_run_state_unlocked(self, state: RunState) -> None:
             self.saves += 1
             if self.saves == 2:
                 raise OSError("simulated final state failure")
-            super().save_run_state(state)
+            super()._save_run_state_unlocked(state)
 
     store = FailFinalStateStore(data_dir)
     pipeline = make_pipeline(tmp_path, store=store)
@@ -760,6 +792,77 @@ def test_malformed_github_usage_falls_back_with_known_lower_bound_and_no_secret(
             assert secret_usage not in artifact.read_text("utf-8")
 
 
+def test_provider_transport_attempt_is_visible_in_pipeline_lower_bound(
+    tmp_path: Path,
+) -> None:
+    """Would catch a response-loss attempt disappearing from daily call/completeness metrics."""
+    from ai_daily.pipeline import RunOptions
+
+    secret = "provider-transport-sk-secret"
+
+    class LaterTransportFailureClient:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs: object) -> dict[str, object]:
+            self.calls += 1
+            prompt = str(kwargs["messages"][1]["content"])  # type: ignore[index]
+            if "selected_cluster_ids" not in prompt:
+                raise RuntimeError(secret)
+            payload = json.loads(prompt.splitlines()[-1])
+            cluster_id = payload[0]["cluster_id"]
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "selected_cluster_ids": [cluster_id],
+                                    "items": [
+                                        {
+                                            "cluster_id": cluster_id,
+                                            "summary": "模型摘要",
+                                            "why_it_matters": "模型价值",
+                                        }
+                                    ],
+                                },
+                                ensure_ascii=False,
+                            )
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 17, "completion_tokens": 5},
+            }
+
+    client = LaterTransportFailureClient()
+    result = make_pipeline(
+        tmp_path,
+        enricher=AIEnricher(
+            client,
+            AppSettings(ai_model="test-model", ai_max_output_tokens=256),
+        ),
+        off_enricher=OffEnricher(),
+    ).run(RunOptions())
+
+    assert client.calls == 2
+    assert [
+        (record.stage, record.call_count, record.is_complete)
+        for record in result.usage
+    ] == [("news", 1, True), ("github", 1, False)]
+    assert result.ai_call_count == 2
+    assert result.token_usage_complete is False
+    assert result.cost_is_lower_bound is True
+    assert result.estimated_cost == Decimal("0.000005")
+    assert result.warnings == [
+        "AI enrichment failed; deterministic fallback used",
+        "AI usage data incomplete; reported cost is a lower bound",
+    ]
+    for artifact in (tmp_path / "output").rglob("*"):
+        if artifact.is_file():
+            assert secret not in artifact.read_text("utf-8")
+
+
 def test_github_transport_failure_uses_newest_cached_snapshot_and_exposes_date(tmp_path: Path) -> None:
     """Would catch degraded GitHub output silently dropping its snapshot date or using an older cache."""
     from ai_daily.pipeline import RunOptions
@@ -985,8 +1088,10 @@ def test_state_and_pruning_follow_accepted_mail_in_exact_order(tmp_path: Path) -
         "save-state",
         "load-state",
         "save-snapshot",
+        "load-state",
         "save-state",
         "mail",
+        "load-state",
         "save-state",
         "prune",
     ]
@@ -1002,12 +1107,12 @@ def test_pruning_does_not_run_when_state_write_fails_after_accepted_mail(tmp_pat
             super().__init__(data_dir)
             self.saves = 0
 
-        def save_run_state(self, state: RunState) -> None:
+        def _save_run_state_unlocked(self, state: RunState) -> None:
             self.events.append("save-state")
             self.saves += 1
             if self.saves == 2:
                 raise OSError("disk full")
-            StateStore.save_run_state(self, state)
+            StateStore._save_run_state_unlocked(self, state)
 
     data_dir = tmp_path / "data"
     StateStore(data_dir).reserve_delivery("2026-08-24", "gh-100-1", ATTEMPT_TIME)
@@ -1017,7 +1122,14 @@ def test_pruning_does_not_run_when_state_write_fails_after_accepted_mail(tmp_pat
             RunOptions(send=True, attempt_id="gh-100-1")
         )
 
-    assert store.events == ["load-state", "save-snapshot", "save-state", "save-state"]
+    assert store.events == [
+        "load-state",
+        "save-snapshot",
+        "load-state",
+        "save-state",
+        "load-state",
+        "save-state",
+    ]
 
 
 def test_output_paths_are_atomic_and_cost_report_contains_only_safe_allowlisted_data(
