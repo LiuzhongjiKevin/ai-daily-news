@@ -1,4 +1,5 @@
 import json
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -385,6 +386,40 @@ def test_local_send_durably_reserves_before_mail_call(tmp_path: Path) -> None:
 
     assert result.delivery_outcome == "accepted"
     assert store.load_run_state().delivery_intents == {}
+
+
+def test_pipeline_holds_delivery_operation_across_mail_and_completion(tmp_path: Path) -> None:
+    """Would catch the pipeline releasing the shared lock around the external side effect."""
+    from ai_daily.pipeline import RunOptions
+
+    class OperationTrackingStore(StateStore):
+        operation_active = False
+
+        @contextmanager
+        def delivery_operation(self, local_date: str, attempt_id: str):  # type: ignore[no-untyped-def]
+            with super().delivery_operation(local_date, attempt_id) as operation:
+                self.operation_active = True
+                try:
+                    yield operation
+                finally:
+                    self.operation_active = False
+
+    store = OperationTrackingStore(tmp_path / "data")
+    store.reserve_delivery("2026-08-24", "gh-100-1", ATTEMPT_TIME)
+
+    class InspectingMailer(RecordingMailer):
+        def send(self, rendered: RenderedDigest) -> str:
+            assert store.operation_active is True
+            intent = store.load_run_state().delivery_intents["2026-08-24"]
+            assert intent.status == "ambiguous"
+            return super().send(rendered)
+
+    result = make_pipeline(tmp_path, store=store, mailer=InspectingMailer()).run(
+        RunOptions(send=True, attempt_id="gh-100-1")
+    )
+
+    assert result.sent is True
+    assert store.operation_active is False
 
 
 def test_send_reloads_and_persists_matching_owner_immediately_before_mail(

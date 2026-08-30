@@ -29,9 +29,7 @@ concurrency:
 jobs:
   daily:
     if: >-
-      (github.event_name != 'schedule' || vars.AI_DAILY_SCHEDULE_ENABLED == 'true') &&
-      ((github.event_name == 'workflow_dispatch' && inputs.send != true) ||
-      github.ref_name == github.event.repository.default_branch)
+      github.event_name != 'schedule' || vars.AI_DAILY_SCHEDULE_ENABLED == 'true'
     runs-on: ubuntu-latest
     env:
       AI_DAILY_ATTEMPT_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
@@ -41,11 +39,18 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: Verify centralized delivery ref
+        id: delivery_ref
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python scripts/check_delivery_ref.py
       - run: python -m pip install --requirement requirements-prod.lock
       - run: python -m pip install --no-deps --no-build-isolation -e .
       - name: Reserve delivery intent
         id: reserve
-        if: github.event_name != 'workflow_dispatch' || inputs.send == true
+        if: >-
+          steps.delivery_ref.outputs.trusted == 'true' &&
+          (github.event_name != 'workflow_dispatch' || inputs.send == true)
         run: |
           force_arg=""
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
@@ -53,7 +58,9 @@ jobs:
           fi
           ai-daily reserve-delivery --attempt-id "${AI_DAILY_ATTEMPT_ID}" ${force_arg}
       - name: Commit reserved intent
-        if: steps.reserve.outputs.reservation_status == 'reserved'
+        if: >-
+          steps.delivery_ref.outputs.trusted == 'true' &&
+          steps.reserve.outputs.reservation_status == 'reserved'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -73,8 +80,9 @@ jobs:
         id: digest
         if: >-
           (github.event_name == 'workflow_dispatch' && inputs.send != true) ||
-          steps.reserve.outputs.reservation_status == 'reserved' ||
-          steps.reserve.outputs.reservation_status == 'already_sent'
+          (steps.delivery_ref.outputs.trusted == 'true' &&
+          (steps.reserve.outputs.reservation_status == 'reserved' ||
+          steps.reserve.outputs.reservation_status == 'already_sent'))
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
@@ -96,12 +104,16 @@ jobs:
         id: cleanup
         if: >-
           always() &&
+          steps.delivery_ref.outputs.trusted == 'true' &&
           steps.reserve.outputs.reservation_status == 'reserved' &&
           steps.digest.outcome == 'failure' &&
           steps.digest.outputs.delivery_outcome == 'not_attempted'
         run: ai-daily release-delivery --attempt-id "${AI_DAILY_ATTEMPT_ID}"
       - name: Commit unattempted cleanup
-        if: always() && steps.cleanup.outcome == 'success'
+        if: >-
+          always() &&
+          steps.delivery_ref.outputs.trusted == 'true' &&
+          steps.cleanup.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -120,6 +132,7 @@ jobs:
       - name: Commit accepted state
         if: >-
           always() &&
+          steps.delivery_ref.outputs.trusted == 'true' &&
           steps.digest.outcome == 'success' &&
           steps.digest.outputs.delivery_outcome == 'accepted'
         run: |

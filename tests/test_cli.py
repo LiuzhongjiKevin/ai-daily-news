@@ -246,8 +246,35 @@ def test_reserve_and_resolve_commands_change_only_safe_local_delivery_state(
 
     state.delivery_intents["2026-08-24"].status = "ambiguous"
     StateStore(tmp_path / "data").save_run_state(state)
-    assert cli.main(["resolve-delivery", "retry", "--date", "2026-08-24"]) == 0
+    assert (
+        cli.main(
+            [
+                "resolve-delivery",
+                "retry",
+                "--date",
+                "2026-08-24",
+                "--confirm-owner-terminal",
+            ]
+        )
+        == 0
+    )
     assert StateStore(tmp_path / "data").load_run_state().delivery_intents == {}
+
+
+def test_resolution_requires_explicit_terminal_owner_confirmation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Would catch a local operator resolving while the owning sender may still be active."""
+    from ai_daily import cli
+    from ai_daily.state import StateStore
+
+    monkeypatch.setattr(cli, "project_root", lambda: tmp_path)
+    store = StateStore(tmp_path / "data")
+    store.reserve_delivery("2026-08-24", "gh-100-1", cli.datetime(2026, 8, 24, tzinfo=cli.UTC))
+
+    assert cli.main(["resolve-delivery", "retry", "--date", "2026-08-24"]) == 2
+    assert "terminal" in capsys.readouterr().err.lower()
+    assert "2026-08-24" in store.load_run_state().delivery_intents
 
 
 def test_resolution_rejects_unsafe_inputs_without_echoing_them(
@@ -270,6 +297,7 @@ def test_resolution_rejects_unsafe_inputs_without_echoing_them(
                 "2026-08-24",
                 "--message-id",
                 unsafe,
+                "--confirm-owner-terminal",
             ]
         )
         == 2

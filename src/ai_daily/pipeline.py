@@ -384,29 +384,27 @@ class DailyPipeline:
             message_id: str | None = None
             if options.send:
                 assert owned_attempt is not None
-                try:
-                    self.state_store.mark_delivery_ambiguous(local_date, owned_attempt)
-                except DeliveryIntentConflictError as error:
-                    raise DeliveryAmbiguousError(
-                        "Delivery ownership changed before the mail boundary"
-                    ) from error
-                self.delivery_outcome = "ambiguous"
-                result.delivery_outcome = "ambiguous"
-                message_id = self.mailer.send(rendered)
-                self.delivery_outcome = "accepted"
-                result.delivery_outcome = "accepted"
-                result.message_id = message_id
-                try:
-                    self.state_store.complete_delivery(
-                        local_date,
-                        owned_attempt,
-                        message_id,
-                        local_now,
-                    )
-                except DeliveryIntentConflictError as error:
-                    raise DeliveryAmbiguousError(
-                        "Delivery ownership changed before the accepted-state commit"
-                    ) from error
+                with self.state_store.delivery_operation(
+                    local_date, owned_attempt
+                ) as delivery:
+                    try:
+                        delivery.mark_ambiguous()
+                    except DeliveryIntentConflictError as error:
+                        raise DeliveryAmbiguousError(
+                            "Delivery ownership changed before the mail boundary"
+                        ) from error
+                    self.delivery_outcome = "ambiguous"
+                    result.delivery_outcome = "ambiguous"
+                    message_id = self.mailer.send(rendered)
+                    self.delivery_outcome = "accepted"
+                    result.delivery_outcome = "accepted"
+                    result.message_id = message_id
+                    try:
+                        delivery.complete(message_id, local_now)
+                    except DeliveryIntentConflictError as error:
+                        raise DeliveryAmbiguousError(
+                            "Delivery ownership changed before the accepted-state commit"
+                        ) from error
                 self.state_store.prune_snapshots(
                     local_now.date(), self.settings.snapshot_retention_days
                 )

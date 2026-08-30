@@ -31,6 +31,38 @@ class DeliveryResolutionError(DeliveryStateError):
     """An operator resolution is incomplete or cannot apply to current state."""
 
 
+class DeliveryOperation:
+    """State mutations permitted while one process owns the delivery-operation lock."""
+
+    def __init__(self, store: "StateStore", local_date: str, attempt_id: str) -> None:
+        self._store = store
+        self._local_date = local_date
+        self._attempt_id = attempt_id
+        self._active = False
+
+    def _set_active(self, active: bool) -> None:
+        self._active = active
+
+    def _require_active(self) -> None:
+        if not self._active:
+            raise DeliveryStateError("Delivery operation is inactive")
+
+    def mark_ambiguous(self) -> RunState:
+        self._require_active()
+        return self._store._mark_delivery_ambiguous_locked(
+            self._local_date, self._attempt_id
+        )
+
+    def complete(self, message_id: str, accepted_at: datetime) -> RunState:
+        self._require_active()
+        return self._store._complete_delivery_locked(
+            self._local_date,
+            self._attempt_id,
+            _validated_message_id(message_id),
+            accepted_at,
+        )
+
+
 class StateStore:
     def __init__(
         self,
@@ -101,6 +133,23 @@ class StateStore:
                     # Closing the handle also releases the OS lock; never mask the body error.
                     pass
 
+    @contextmanager
+    def delivery_operation(
+        self, local_date: str, attempt_id: str
+    ) -> Iterator[DeliveryOperation]:
+        """Hold the cross-process lock across ownership check, mail, and final state."""
+        day = _validated_date(local_date)
+        safe_attempt = _validated_intent(
+            attempt_id, datetime.now(UTC)
+        ).attempt_id
+        operation = DeliveryOperation(self, day, safe_attempt)
+        with self._delivery_transaction():
+            operation._set_active(True)
+            try:
+                yield operation
+            finally:
+                operation._set_active(False)
+
     def reserve_delivery(
         self,
         local_date: str,
@@ -170,22 +219,25 @@ class StateStore:
             return "sent"
 
     def mark_delivery_ambiguous(self, local_date: str, attempt_id: str) -> RunState:
-        day = _validated_date(local_date)
-        safe_attempt = _validated_intent(attempt_id, datetime.now(UTC)).attempt_id
-        with self._delivery_transaction():
-            state = self.load_run_state()
-            existing = state.delivery_intents.get(day)
-            if (
-                existing is None
-                or existing.attempt_id != safe_attempt
-                or existing.status != "reserved"
-            ):
-                raise DeliveryIntentConflictError(
-                    "Delivery ownership changed before the mail boundary"
-                )
-            existing.status = "ambiguous"
-            self._save_run_state_unlocked(state)
-            return state
+        with self.delivery_operation(local_date, attempt_id) as operation:
+            return operation.mark_ambiguous()
+
+    def _mark_delivery_ambiguous_locked(
+        self, local_date: str, attempt_id: str
+    ) -> RunState:
+        state = self.load_run_state()
+        existing = state.delivery_intents.get(local_date)
+        if (
+            existing is None
+            or existing.attempt_id != attempt_id
+            or existing.status != "reserved"
+        ):
+            raise DeliveryIntentConflictError(
+                "Delivery ownership changed before the mail boundary"
+            )
+        existing.status = "ambiguous"
+        self._save_run_state_unlocked(state)
+        return state
 
     def complete_delivery(
         self,
@@ -194,25 +246,31 @@ class StateStore:
         message_id: str,
         accepted_at: datetime,
     ) -> RunState:
-        day = _validated_date(local_date)
-        safe_attempt = _validated_intent(attempt_id, datetime.now(UTC)).attempt_id
-        safe_message_id = _validated_message_id(message_id)
-        with self._delivery_transaction():
-            state = self.load_run_state()
-            existing = state.delivery_intents.get(day)
-            if (
-                existing is None
-                or existing.attempt_id != safe_attempt
-                or existing.status != "ambiguous"
-            ):
-                raise DeliveryIntentConflictError(
-                    "Delivery ownership changed before the accepted-state commit"
-                )
-            state.sent_dates[day] = safe_message_id
-            state.last_success_at = accepted_at
-            del state.delivery_intents[day]
-            self._save_run_state_unlocked(state)
-            return state
+        with self.delivery_operation(local_date, attempt_id) as operation:
+            return operation.complete(message_id, accepted_at)
+
+    def _complete_delivery_locked(
+        self,
+        local_date: str,
+        attempt_id: str,
+        message_id: str,
+        accepted_at: datetime,
+    ) -> RunState:
+        state = self.load_run_state()
+        existing = state.delivery_intents.get(local_date)
+        if (
+            existing is None
+            or existing.attempt_id != attempt_id
+            or existing.status != "ambiguous"
+        ):
+            raise DeliveryIntentConflictError(
+                "Delivery ownership changed before the accepted-state commit"
+            )
+        state.sent_dates[local_date] = message_id
+        state.last_success_at = accepted_at
+        del state.delivery_intents[local_date]
+        self._save_run_state_unlocked(state)
+        return state
 
     def save_snapshot(self, day: date, snapshots: list[RepoSnapshot]) -> Path:
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)

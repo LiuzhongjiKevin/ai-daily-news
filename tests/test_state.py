@@ -120,6 +120,31 @@ def _crash_during_reservation(data_dir: Path, loaded: Any) -> None:
     )
 
 
+def _hold_delivery_operation(
+    data_dir: Path, entered: Any, resume: Any, output: Any
+) -> None:
+    try:
+        with StateStore(data_dir).delivery_operation(
+            "2026-08-24", "gh-100-1"
+        ) as operation:
+            operation.mark_ambiguous()
+            entered.set()
+            if not resume.wait(5):
+                raise RuntimeError("test operation barrier timed out")
+        output.put("released")
+    except Exception as error:  # noqa: BLE001 - report type only across process boundary.
+        output.put(f"unexpected-{type(error).__name__}")
+
+
+def _crash_during_delivery_operation(data_dir: Path, entered: Any) -> None:
+    with StateStore(data_dir).delivery_operation(
+        "2026-08-24", "gh-100-1"
+    ) as operation:
+        operation.mark_ambiguous()
+        entered.set()
+        os._exit(24)
+
+
 def test_state_round_trip_is_atomic(tmp_path: Path) -> None:
     store = StateStore(tmp_path)
     store.save_run_state(RunState(sent_dates={"2026-08-24": "message-id"}))
@@ -273,6 +298,74 @@ def test_process_crash_releases_os_lock_even_when_lock_file_remains(tmp_path: Pa
             "2026-08-24", "gh-200-1", INTENT_TIME
         )
         == "reserved"
+    )
+
+
+def test_delivery_operation_serializes_resolution_and_release_across_processes(
+    tmp_path: Path,
+) -> None:
+    """Would catch an operator clearing ownership while the mail call can still be active."""
+    from ai_daily.state import DeliveryStateError
+
+    StateStore(tmp_path).reserve_delivery("2026-08-24", "gh-100-1", INTENT_TIME)
+    context = multiprocessing.get_context("spawn")
+    entered = context.Event()
+    resume = context.Event()
+    output = context.Queue()
+    holder = context.Process(
+        target=_hold_delivery_operation,
+        args=(tmp_path, entered, resume, output),
+    )
+    holder.start()
+    assert entered.wait(5), "delivery operation did not reach the mail boundary"
+    try:
+        contender = StateStore(
+            tmp_path,
+            delivery_lock_timeout=0.05,
+            delivery_lock_poll_interval=0.005,
+        )
+        with pytest.raises(DeliveryStateError, match="busy"):
+            contender.resolve_delivery("2026-08-24", "retry")
+        with pytest.raises(DeliveryStateError, match="busy"):
+            contender.release_delivery("2026-08-24", "gh-100-1")
+        intent = StateStore(tmp_path).load_run_state().delivery_intents["2026-08-24"]
+        assert intent.status == "ambiguous"
+    finally:
+        resume.set()
+        _join_processes([holder])
+
+    assert output.get(timeout=2) == "released"
+    assert StateStore(tmp_path).resolve_delivery("2026-08-24", "retry") == "retry"
+
+
+def test_crash_releases_delivery_operation_lock_but_preserves_ambiguity(
+    tmp_path: Path,
+) -> None:
+    """Would catch a crashed sender either leaving a stale lock or erasing uncertainty."""
+    StateStore(tmp_path).reserve_delivery("2026-08-24", "gh-100-1", INTENT_TIME)
+    context = multiprocessing.get_context("spawn")
+    entered = context.Event()
+    process = context.Process(
+        target=_crash_during_delivery_operation,
+        args=(tmp_path, entered),
+    )
+
+    process.start()
+    assert entered.wait(5), "crashing process did not persist the ambiguous boundary"
+    process.join(5)
+    if process.is_alive():
+        process.terminate()
+        process.join(5)
+        pytest.fail("crashing delivery operation hung")
+
+    assert process.exitcode == 24
+    intent = StateStore(tmp_path).load_run_state().delivery_intents["2026-08-24"]
+    assert intent.status == "ambiguous"
+    assert (
+        StateStore(tmp_path, delivery_lock_timeout=0.2).resolve_delivery(
+            "2026-08-24", "retry"
+        )
+        == "retry"
     )
 
 

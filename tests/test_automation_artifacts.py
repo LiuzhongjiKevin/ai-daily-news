@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).parents[1]
@@ -86,13 +90,126 @@ def test_scheduled_delivery_requires_explicit_repository_variable_gate() -> None
     assert "vars.AI_DAILY_SCHEDULE_ENABLED == 'true'" in gate
 
 
-def test_delivery_dispatch_is_default_branch_only_but_preview_remains_branch_safe() -> None:
-    """Would catch a feature-branch manual send using state isolated from scheduled delivery."""
-    workflow = load_workflow("daily.yml")
-    gate = workflow["jobs"]["daily"]["if"]
+@pytest.mark.parametrize(
+    ("case", "ref", "ref_type", "default_branch", "trusted"),
+    [
+        ("scheduled default", "refs/heads/main", "branch", "main", True),
+        ("manual default", "refs/heads/main", "branch", "main", True),
+        ("ordinary feature", "refs/heads/feature/safe-preview", "branch", "main", False),
+        ("case collision", "refs/heads/Main", "branch", "main", False),
+        ("same-named tag", "refs/tags/main", "tag", "main", False),
+    ],
+)
+def test_delivery_ref_gate_uses_exact_full_branch_ref(
+    tmp_path: Path,
+    case: str,
+    ref: str,
+    ref_type: str,
+    default_branch: str,
+    trusted: bool,
+) -> None:
+    """Would catch GitHub's case-insensitive expression equality authorizing another ref."""
+    output = tmp_path / "github-output.txt"
+    environment = {
+        **os.environ,
+        "GITHUB_REF": ref,
+        "GITHUB_REF_TYPE": ref_type,
+        "DEFAULT_BRANCH": default_branch,
+        "GITHUB_OUTPUT": str(output),
+    }
 
-    assert "github.ref_name == github.event.repository.default_branch" in gate
-    assert "github.event_name == 'workflow_dispatch' && inputs.send != true" in gate
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "check_delivery_ref.py")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=5,
+    )
+
+    assert completed.returncode == 0, case
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+    assert output.read_text(encoding="utf-8") == f"trusted={str(trusted).lower()}\n"
+
+
+def test_delivery_paths_require_trusted_ref_but_preview_remains_branch_safe() -> None:
+    """Would catch a feature branch reserving, sending, or pushing centralized state."""
+    workflow = load_workflow("daily.yml")
+    job = workflow["jobs"]["daily"]
+    steps = job["steps"]
+    gate_index = next(
+        index for index, step in enumerate(steps) if step.get("id") == "delivery_ref"
+    )
+    gate = steps[gate_index]
+
+    assert "github.ref_name == github.event.repository.default_branch" not in job["if"]
+    assert gate["env"] == {"DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}"}
+    assert gate["run"] == "python scripts/check_delivery_ref.py"
+
+    protected_names = {
+        "Reserve delivery intent",
+        "Commit reserved intent",
+        "Release unattempted intent",
+        "Commit unattempted cleanup",
+        "Commit accepted state",
+    }
+    for step in steps:
+        if step.get("name") in protected_names:
+            assert "steps.delivery_ref.outputs.trusted == 'true'" in step["if"]
+
+    digest_index = next(
+        index for index, step in enumerate(steps) if step.get("name") == "Run daily digest"
+    )
+    digest = steps[digest_index]
+    assert gate_index < digest_index
+    assert "github.event_name == 'workflow_dispatch' && inputs.send != true" in digest["if"]
+    assert "steps.delivery_ref.outputs.trusted == 'true'" in digest["if"]
+    assert "ai-daily preview" in digest["run"]
+
+
+def test_manual_resolution_workflow_is_serialized_state_only_and_default_branch_gated() -> None:
+    """Would catch operator recovery racing delivery or mutating non-state paths."""
+    workflow = load_workflow("resolve-delivery.yml")
+    trigger = workflow[True]["workflow_dispatch"]["inputs"]
+    assert set(trigger) == {
+        "date",
+        "resolution",
+        "message_id",
+        "confirm_owner_terminal",
+    }
+    assert trigger["resolution"]["options"] == ["retry", "sent"]
+    assert trigger["confirm_owner_terminal"]["type"] == "boolean"
+    assert workflow["permissions"] == {"contents": "write"}
+    assert workflow["concurrency"] == {
+        "group": "ai-daily-delivery",
+        "cancel-in-progress": False,
+    }
+
+    steps = workflow["jobs"]["resolve"]["steps"]
+    assert [step["uses"] for step in steps if "uses" in step] == [
+        "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38",
+    ]
+    ref_gate = next(step for step in steps if step.get("id") == "delivery_ref")
+    context_gate = next(
+        step for step in steps if step.get("name") == "Require trusted recovery context"
+    )
+    resolution = next(step for step in steps if step.get("name") == "Resolve delivery state")
+    state_commit = next(step for step in steps if step.get("name") == "Commit resolved state")
+    assert steps.index(ref_gate) < steps.index(context_gate) < steps.index(resolution)
+    assert steps.index(resolution) < steps.index(state_commit)
+    assert ref_gate["run"] == "python scripts/check_delivery_ref.py"
+    assert "TRUSTED_REF" in context_gate["run"]
+    assert "OWNER_TERMINAL_CONFIRMED" in context_gate["run"]
+    assert "steps.delivery_ref.outputs.trusted == 'true'" in resolution["if"]
+    assert "inputs.confirm_owner_terminal == true" in resolution["if"]
+    assert "--confirm-owner-terminal" in resolution["run"]
+    assert "steps.delivery_ref.outputs.trusted == 'true'" in state_commit["if"]
+    assert "git add -- data/state.json" in state_commit["run"]
+    assert "git add -A" not in state_commit["run"]
+    assert "git push --force" not in state_commit["run"]
+    assert "git push origin HEAD:" in state_commit["run"]
 
 
 def test_daily_delivery_concurrency_is_shared_across_all_repository_refs() -> None:
@@ -225,6 +342,24 @@ def test_operator_guide_contains_private_outlook_and_safety_invariants() -> None
         "可编辑仓库检出",
     ):
         assert phrase in guide
+
+
+def test_operator_guide_requires_serialized_terminal_owner_recovery() -> None:
+    """Would catch docs telling an operator to clear intent while its owner can still send."""
+    guide = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "Resolve AI Daily Delivery" in guide
+    assert "ai-daily-delivery" in guide
+    assert "运行仍为 queued 或 in_progress 时绝不能执行恢复" in guide
+    assert "确认拥有该 intent 的运行已经进入终态" in guide
+    assert (
+        "ai-daily resolve-delivery retry --date 2026-08-24 "
+        "--confirm-owner-terminal"
+    ) in guide
+    assert (
+        "ai-daily resolve-delivery sent --date 2026-08-24 "
+        "--message-id mailbox-confirmed-2026-08-24 --confirm-owner-terminal"
+    ) in guide
 
 
 def test_package_metadata_declares_editable_repository_runtime_contract() -> None:

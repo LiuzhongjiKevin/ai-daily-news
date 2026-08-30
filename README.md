@@ -35,17 +35,21 @@
 
 任何未解决的 `reserved`/`ambiguous` intent 都会阻止主任务、补偿任务和 `force` 自动再发。这样会优先避免重复邮件；基础设施在关键时刻崩溃后，可能必须人工恢复。不要直接编辑 `state.json`，也不要仅凭失败标志重跑。
 
-先停用计划任务并在 Outlook 中按当天主题检查“已发送邮件”和收件结果，然后只执行下列一种命令（示例日期请替换）：
+先停用计划任务，并确认拥有该 intent 的运行已经进入终态（`success`、`failure` 或 `cancelled`）；运行仍为 queued 或 in_progress 时绝不能执行恢复。然后在 Outlook 中按当天主题检查“已发送邮件”和收件结果。
+
+首选在**默认分支**手动运行 **Resolve AI Daily Delivery** 工作流，填写北京时间日期、`retry` 或 `sent`、`sent` 所需的安全本地指纹，并勾选“owning delivery run is terminal”确认。它与日常发信严格共享 `ai-daily-delivery` 并发组且不取消在先任务，因此恢复状态写入不会与发信任务重叠；工作流只暂存并非强制推送 `data/state.json`。非默认分支、大小写碰撞分支和同名 tag 都不能执行恢复。
+
+只有在无法使用该工作流时，才在默认分支的本地检出中执行下列一种命令。`--confirm-owner-terminal` 是对上述终态检查的显式确认，不得提前填写或作为常规绕过开关（示例日期请替换）：
 
 ```text
 # 已确认没有被接受/发送的当天邮件，允许下一次安全重试
-ai-daily resolve-delivery retry --date 2026-08-24
+ai-daily resolve-delivery retry --date 2026-08-24 --confirm-owner-terminal
 
 # 已确认邮件存在，记录一个不含邮箱或秘密的本地指纹并禁止重发
-ai-daily resolve-delivery sent --date 2026-08-24 --message-id mailbox-confirmed-2026-08-24
+ai-daily resolve-delivery sent --date 2026-08-24 --message-id mailbox-confirmed-2026-08-24 --confirm-owner-terminal
 ```
 
-审阅 `data/state.json` 的差异后提交并推送该文件，再重新启用计划任务。`retry` 只应在人工确认没有已接受邮件后使用；`sent` 的 `--message-id` 只能使用字母、数字、点、下划线、冒号或连字符，不要放邮箱、OAuth 值或其他秘密。已知完成的邮件若需要有意重发，使用手动工作流的 `send=true, force=true`；存在未解决 intent 时必须先按上述流程处理。
+本地 CLI 会获取与发信边界相同的操作锁；若仍有本机发送者持锁，它会安全失败而不会清除 intent。审阅 `data/state.json` 的差异后只提交并推送该文件，再重新启用计划任务。`retry` 只应在人工确认没有已接受邮件后使用；`sent` 的 `--message-id` 只能使用字母、数字、点、下划线、冒号或连字符，不要放邮箱、OAuth 值或其他秘密。已知完成的邮件若需要有意重发，使用手动工作流的 `send=true, force=true`；存在未解决 intent 时必须先按上述流程处理。
 
 ## 日常安全边界
 

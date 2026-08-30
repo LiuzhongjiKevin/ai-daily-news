@@ -306,6 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
     resolve.add_argument("resolution", choices=("retry", "sent"))
     resolve.add_argument("--date")
     resolve.add_argument("--message-id")
+    resolve.add_argument("--confirm-owner-terminal", action="store_true")
     return parser
 
 
@@ -383,6 +384,12 @@ def _validate_command(args: argparse.Namespace) -> int:
 
 
 def _delivery_command(args: argparse.Namespace) -> int:
+    if args.command == "resolve-delivery" and not args.confirm_owner_terminal:
+        print(
+            "Delivery resolution requires confirmation that the owning run is terminal.",
+            file=sys.stderr,
+        )
+        return 2
     try:
         local_date = getattr(args, "date", None) or _current_local_time().date().isoformat()
         store = _delivery_store()
