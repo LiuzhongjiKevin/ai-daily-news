@@ -1,4 +1,6 @@
 import json
+import re
+import unicodedata
 from collections.abc import Callable
 from typing import Any, Literal
 
@@ -20,6 +22,14 @@ _CATEGORY_LABELS = {
     "open_source": "开源动态",
     "other": "行业动态",
 }
+_MARKDOWN_URL = re.compile(
+    r"!?\[([^\]\r\n]*)\]\(\s*(?:https?://|www\.)[^)\r\n]*\)",
+    re.IGNORECASE,
+)
+_AUTOLINK_URL = re.compile(r"<\s*(?:https?://|www\.)[^>\r\n]*>", re.IGNORECASE)
+_BARE_URL = re.compile(r"(?<![\w@])(?:https?://|www\.)[^\s<>\[\]{}()]+", re.IGNORECASE)
+_MISSING = object()
+_INVALID = object()
 
 
 class AIEnrichmentError(RuntimeError):
@@ -57,32 +67,87 @@ def _response_content(response: object) -> str:
     return content
 
 
+def _safe_field(source: object, name: str) -> object:
+    try:
+        if isinstance(source, dict):
+            return source.get(name, _MISSING)
+        return getattr(source, name, _MISSING)
+    except Exception:  # noqa: BLE001 - provider objects may raise from attribute access.
+        return _INVALID
+
+
+def _token_value(raw: object) -> object:
+    if raw is _MISSING or raw is None:
+        return _MISSING
+    if raw is _INVALID or isinstance(raw, bool):
+        return _INVALID
+    if type(raw) is int:
+        return raw if raw >= 0 else _INVALID
+    if type(raw) is str:
+        normalized = str.strip(raw)
+        if len(normalized) <= 20 and re.fullmatch(r"[0-9]+", normalized):
+            return int(normalized)
+    return _INVALID
+
+
+def _token_field(source: object, name: str) -> object:
+    return _token_value(_safe_field(source, name))
+
+
+def _nested_token_field(source: object, container_name: str, field_name: str) -> object:
+    container = _safe_field(source, container_name)
+    if container is _MISSING or container is None:
+        return _MISSING
+    if container is _INVALID:
+        return _INVALID
+    return _token_field(container, field_name)
+
+
 def _usage_record(stage: str, model: str, response: object) -> UsageRecord:
-    usage = _value(response, "usage", {})
-    if usage is None:
-        usage = {}
-    hit = _value(usage, "prompt_cache_hit_tokens")
-    miss = _value(usage, "prompt_cache_miss_tokens")
-    output = _value(usage, "completion_tokens")
-    if hit is None:
-        details = _value(usage, "prompt_tokens_details", {})
-        hit = _value(details, "cached_tokens")
-    if hit is None:
-        details = _value(usage, "input_tokens_details", {})
-        hit = _value(details, "cached_tokens", 0)
-    if miss is None:
-        input_tokens = _value(usage, "input_tokens")
-        if input_tokens is None:
-            input_tokens = _value(usage, "prompt_tokens", 0)
-        miss = max(int(input_tokens or 0) - int(hit or 0), 0)
-    if output is None:
-        output = _value(usage, "output_tokens", 0)
+    usage = _safe_field(response, "usage")
+    if usage is _MISSING or usage is None or usage is _INVALID:
+        return UsageRecord(stage=stage, model=model, is_complete=False)
+
+    hit_value = _token_field(usage, "prompt_cache_hit_tokens")
+    if hit_value is _MISSING:
+        hit_value = _nested_token_field(usage, "prompt_tokens_details", "cached_tokens")
+    if hit_value is _MISSING:
+        hit_value = _nested_token_field(usage, "input_tokens_details", "cached_tokens")
+    hit_invalid = hit_value is _INVALID
+    hit = int(hit_value) if isinstance(hit_value, int) else 0
+
+    miss_value = _token_field(usage, "prompt_cache_miss_tokens")
+    input_known = False
+    miss = 0
+    malformed = hit_invalid or miss_value is _INVALID
+    if isinstance(miss_value, int):
+        miss = miss_value
+        input_known = True
+    elif miss_value is _MISSING:
+        total_value = _token_field(usage, "input_tokens")
+        if total_value is _MISSING:
+            total_value = _token_field(usage, "prompt_tokens")
+        malformed = malformed or total_value is _INVALID
+        if isinstance(total_value, int) and not hit_invalid and hit <= total_value:
+            miss = total_value - hit
+            input_known = True
+        elif isinstance(total_value, int) and hit > total_value:
+            malformed = True
+
+    output_value = _token_field(usage, "completion_tokens")
+    if output_value is _MISSING:
+        output_value = _token_field(usage, "output_tokens")
+    output_known = isinstance(output_value, int)
+    malformed = malformed or output_value is _INVALID
+    output = int(output_value) if output_known else 0
+
     return UsageRecord(
         stage=stage,
         model=model,
-        input_cache_hit_tokens=int(hit or 0),
-        input_cache_miss_tokens=int(miss or 0),
-        output_tokens=int(output or 0),
+        input_cache_hit_tokens=hit,
+        input_cache_miss_tokens=miss,
+        output_tokens=output,
+        is_complete=not malformed and input_known and output_known,
     )
 
 
@@ -95,7 +160,36 @@ def _aggregate_usage(records: list[UsageRecord]) -> UsageRecord:
         input_cache_hit_tokens=sum(record.input_cache_hit_tokens for record in records),
         input_cache_miss_tokens=sum(record.input_cache_miss_tokens for record in records),
         output_tokens=sum(record.output_tokens for record in records),
+        is_complete=all(record.is_complete for record in records),
     )
+
+
+def _safe_prompt_text(value: object, limit: int | None = None) -> str:
+    text = unicodedata.normalize("NFKC", str(value))
+    text = "".join(" " if unicodedata.category(character).startswith("C") else character for character in text)
+    text = _MARKDOWN_URL.sub(r"\1", text)
+    text = _AUTOLINK_URL.sub("", text)
+    text = _BARE_URL.sub("", text)
+    text = " ".join(text.split())
+    return text[:limit] if limit is not None else text
+
+
+def _fair_excerpts(items: list[object], budget: int = 800) -> list[str]:
+    excerpts = [_safe_prompt_text(_value(item, "excerpt", "")) for item in items]
+    populated = sum(bool(excerpt) for excerpt in excerpts)
+    if populated == 0:
+        return excerpts
+    base_quota, remainder = divmod(budget, populated)
+    result: list[str] = []
+    populated_index = 0
+    for excerpt in excerpts:
+        if not excerpt:
+            result.append("")
+            continue
+        quota = base_quota + (1 if populated_index < remainder else 0)
+        result.append(excerpt[:quota])
+        populated_index += 1
+    return result
 
 
 class OffEnricher:
@@ -193,24 +287,23 @@ class AIEnricher:
     ) -> tuple[list[NewsCluster], UsageRecord]:
         payload = []
         for cluster in news:
-            remaining_excerpt = 800
             evidence = []
-            for item in cluster.items:
-                excerpt = item.excerpt.strip()[:remaining_excerpt]
-                remaining_excerpt -= len(excerpt)
+            excerpts = _fair_excerpts(cluster.items)
+            for item, excerpt in zip(cluster.items, excerpts, strict=True):
                 evidence.append(
                     {
-                        "source_name": item.source_name.strip()[:120],
+                        "title": _safe_prompt_text(item.title, 240),
+                        "source_name": _safe_prompt_text(item.source_name, 120),
                         "published_at": item.published_at.date().isoformat(),
                         "source_type": item.source_type,
-                        "category": item.category,
+                        "category": _safe_prompt_text(item.category, 80),
                         "excerpt": excerpt,
                     }
                 )
             payload.append(
                 {
                     "cluster_id": cluster.cluster_id,
-                    "title": cluster.title.strip()[:240],
+                    "title": _safe_prompt_text(cluster.title, 240),
                     "trust_grade": cluster.trust_grade,
                     "evidence": evidence,
                 }
@@ -263,14 +356,22 @@ class AIEnricher:
     def _enrich_repositories(
         self, repos: list[RankedRepo], mode: EnrichmentMode
     ) -> tuple[list[RankedRepo], UsageRecord]:
+        repository_labels: list[str] = []
+        used_labels: set[str] = set()
+        for index, repo in enumerate(repos, start=1):
+            label = _safe_prompt_text(repo.snapshot.repository, 180) or f"repository-{index}"
+            if label in used_labels:
+                label = f"{label} #{index}"
+            repository_labels.append(label)
+            used_labels.add(label)
         payload = [
             {
-                "repository": repo.snapshot.repository,
-                "description": repo.snapshot.description[:300],
+                "repository": label,
+                "description": _safe_prompt_text(repo.snapshot.description, 300),
                 "stars_gained": repo.stars_gained,
                 "is_trial": repo.is_trial,
             }
-            for repo in repos
+            for repo, label in zip(repos, repository_labels, strict=True)
         ]
         prompt = (
             f"Mode: {mode}. Write every explanation in Simplified Chinese (简体中文). Return JSON only "
@@ -279,12 +380,19 @@ class AIEnricher:
             + json.dumps(payload, ensure_ascii=False)
         )
         response, usage = self._request_with_retry(
-            "github", prompt, lambda parsed: self._validate_repositories(parsed, repos)
+            "github",
+            prompt,
+            lambda parsed: self._validate_repositories(parsed, repository_labels),
         )
         items = self._validate_repository_response(response)
         explanations = {item["repository"]: item["explanation"] for item in items}
         return (
-            [repo.model_copy(update={"explanation": explanations.get(repo.snapshot.repository, repo.explanation)}) for repo in repos],
+            [
+                repo.model_copy(
+                    update={"explanation": explanations.get(label, repo.explanation)}
+                )
+                for repo, label in zip(repos, repository_labels, strict=True)
+            ],
             usage,
         )
 
@@ -324,6 +432,11 @@ class AIEnricher:
             if request_error is not None:
                 raise request_error
             usage_records.append(_usage_record(stage, self.settings.ai_model, response))
+            if not usage_records[-1].is_complete:
+                raise AIEnrichmentError(
+                    "AI usage data is invalid",
+                    usage=[_aggregate_usage(usage_records)],
+                )
             validation_failure: AIEnrichmentError | None = None
             try:
                 parsed = json.loads(_response_content(response))
@@ -391,11 +504,13 @@ class AIEnricher:
             raise AIEnrichmentError("each selected cluster requires one summary")
 
     @staticmethod
-    def _validate_repositories(payload: dict[str, Any], repos: list[RankedRepo]) -> None:
+    def _validate_repositories(
+        payload: dict[str, Any], repository_names: list[str]
+    ) -> None:
         items = payload.get("items")
         if not isinstance(items, list):
             raise AIEnrichmentError("items must be a list")
-        available = {repo.snapshot.repository for repo in repos}
+        available = set(repository_names)
         seen: set[str] = set()
         for item in items:
             if not isinstance(item, dict):

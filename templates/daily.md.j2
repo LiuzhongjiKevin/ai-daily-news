@@ -40,7 +40,7 @@ AI 要闻 {{ digest.news|length }} 条 · GitHub 周榜 Top {{ digest.repositori
 
 {% for usage in digest.usage %}- {{ usage.stage|markdown_text }} Token：调用 {{ usage.call_count }} 次 / 命中 {{ usage.input_cache_hit_tokens }} / 未命中 {{ usage.input_cache_miss_tokens }} / 输出 {{ usage.output_tokens }}
 {% endfor %}
-本次成本：{{ cost.currency|markdown_text }} {{ cost.total }}
+{% if cost.is_complete %}本次成本{% else %}用量不完整；本次成本下限{% endif %}：{{ cost.currency|markdown_text }} {{ cost.total }}
 
 30-day 预测：{{ cost.currency|markdown_text }} {{ cost.thirty_day_projection }}
 

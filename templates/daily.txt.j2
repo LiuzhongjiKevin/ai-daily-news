@@ -27,7 +27,7 @@ GitHub
 {% if digest.usage %}
 AI 用量与成本
 {% for usage in digest.usage %}- {{ usage.stage }} Token：调用 {{ usage.call_count }} 次 / 命中 {{ usage.input_cache_hit_tokens }} / 未命中 {{ usage.input_cache_miss_tokens }} / 输出 {{ usage.output_tokens }}
-{% endfor %}本次成本：{{ cost.currency }} {{ cost.total }}
+{% endfor %}{% if cost.is_complete %}本次成本{% else %}用量不完整；本次成本下限{% endif %}：{{ cost.currency }} {{ cost.total }}
 30-day 预测：{{ cost.currency }} {{ cost.thirty_day_projection }}
 {% for stage, amount in cost.by_stage.items() %}- {{ stage }}：{{ cost.currency }} {{ amount }}
 {% endfor %}{% endif %}

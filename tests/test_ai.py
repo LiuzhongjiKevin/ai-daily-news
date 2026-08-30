@@ -80,7 +80,7 @@ class ExplodingClient:
 def chat_response(content: str, *, usage: dict[str, object] | None = None) -> dict[str, object]:
     return {
         "choices": [{"message": {"content": content}}],
-        "usage": usage or {},
+        "usage": usage if usage is not None else {"prompt_tokens": 0, "completion_tokens": 0},
     }
 
 
@@ -138,6 +138,7 @@ def test_non_empty_modes_make_one_batched_call_per_section(mode: str) -> None:
             "input_cache_hit_tokens": 12,
             "input_cache_miss_tokens": 34,
             "output_tokens": 56,
+            "is_complete": True,
         },
         {
             "stage": "github",
@@ -146,6 +147,7 @@ def test_non_empty_modes_make_one_batched_call_per_section(mode: str) -> None:
             "input_cache_hit_tokens": 0,
             "input_cache_miss_tokens": 0,
             "output_tokens": 0,
+            "is_complete": True,
         },
     ]
 
@@ -263,6 +265,87 @@ def test_prompts_bound_excerpts_descriptions_output_and_exclude_urls() -> None:
     assert sum(len(row["excerpt"]) for row in evidence) == 800
 
 
+def test_news_prompt_fairly_preserves_titles_and_conflicting_later_evidence() -> None:
+    """Would catch an early long excerpt starving later contradictory source evidence."""
+    cluster = news_cluster(excerpt="first-account " * 100)
+    cluster.items.append(
+        RawItem(
+            source_id="later-conflict",
+            source_name="Later Evidence Desk",
+            source_type="media",
+            title="Later source disputes the release date",
+            published_at=datetime(2026, 8, 24, 8, tzinfo=UTC),
+            canonical_url="https://later.invalid/report",
+            excerpt="later-conflict " * 30,
+            category="model",
+        )
+    )
+    client = FixtureClient(
+        [chat_response(fixture_response("ai_news_response.json"))]
+    )
+
+    AIEnricher(client, settings()).enrich([cluster], [], mode="full")
+
+    news_prompt = client.calls[0]["messages"][1]["content"]  # type: ignore[index]
+    evidence = json.loads(str(news_prompt).splitlines()[-1])[0]["evidence"]
+    assert [row.get("title") for row in evidence] == [
+        "Acme releases a model",
+        "Later source disputes the release date",
+    ]
+    assert evidence[1]["excerpt"].startswith("later-conflict")
+    assert sum(len(row["excerpt"]) for row in evidence) <= 800
+
+
+def test_prompts_strip_urls_and_controls_from_every_untrusted_field() -> None:
+    """Would catch embedded links or controls leaking through non-canonical prompt fields."""
+    cluster = news_cluster()
+    cluster.title = "Useful cluster https://cluster-secret.invalid/path\x00"
+    cluster.items[0].title = "[Useful headline](https://title-secret.invalid/article)\x01"
+    cluster.items[0].source_name = "Useful Desk www.source-secret.invalid/about\r\n"
+    cluster.items[0].excerpt = "Useful evidence <https://excerpt-secret.invalid/detail>\x07"
+    repository = "useful/repo https://repo-secret.invalid/private"
+    repo = ranked_repo(
+        repository,
+        description="Useful project [documentation](www.description-secret.invalid/docs)\x02",
+    )
+    repo_response = json.dumps(
+        {"items": [{"repository": "useful/repo", "explanation": "项目说明"}]},
+        ensure_ascii=False,
+    )
+    client = FixtureClient(
+        [
+            chat_response(fixture_response("ai_news_response.json")),
+            chat_response(repo_response),
+        ]
+    )
+
+    AIEnricher(client, settings()).enrich([cluster], [repo], mode="full")
+
+    news_prompt = client.calls[0]["messages"][1]["content"]  # type: ignore[index]
+    news_payload = json.loads(str(news_prompt).splitlines()[-1])[0]
+    repo_prompt = client.calls[1]["messages"][1]["content"]  # type: ignore[index]
+    repo_payload = json.loads(str(repo_prompt).splitlines()[-1])[0]
+    untrusted_prompt_data = json.dumps(
+        [news_payload, repo_payload], ensure_ascii=False
+    )
+    for host in (
+        "cluster-secret.invalid",
+        "title-secret.invalid",
+        "source-secret.invalid",
+        "excerpt-secret.invalid",
+        "repo-secret.invalid",
+        "description-secret.invalid",
+    ):
+        assert host not in untrusted_prompt_data
+    assert news_payload["title"] == "Useful cluster"
+    assert news_payload["evidence"][0]["title"] == "Useful headline"
+    assert news_payload["evidence"][0]["source_name"] == "Useful Desk"
+    assert news_payload["evidence"][0]["excerpt"] == "Useful evidence"
+    assert repo_payload["repository"] == "useful/repo"
+    assert repo_payload["description"] == "Useful project documentation"
+    assert not any(ord(character) < 32 for character in untrusted_prompt_data)
+
+
 @pytest.mark.parametrize("mode", ["full", "economy"])
 def test_repository_enrichment_repairs_partial_output_and_explains_every_input(mode: str) -> None:
     """Would catch either AI mode accepting a partial GitHub Top-10 explanation list."""
@@ -350,6 +433,7 @@ def test_successful_repair_retry_aggregates_usage_from_both_provider_schemas() -
             "input_cache_hit_tokens": 9,
             "input_cache_miss_tokens": 9,
             "output_tokens": 16,
+            "is_complete": True,
         }
     ]
 
@@ -434,6 +518,7 @@ def test_failed_repair_preserves_both_paid_attempts_without_provider_content() -
             "input_cache_hit_tokens": 0,
             "input_cache_miss_tokens": 30,
             "output_tokens": 5,
+            "is_complete": True,
         }
     ]
     rendered = "".join(traceback.format_exception(error.value))
@@ -480,6 +565,96 @@ def test_later_section_failure_carries_usage_from_the_successful_news_section() 
 
     assert [(record.stage, record.call_count) for record in error.value.usage] == [("news", 1)]
     assert error.value.usage[0].input_cache_miss_tokens == 17
+
+
+def test_malformed_later_usage_is_sanitized_and_preserves_prior_stage_and_retry_usage() -> None:
+    """Would catch provider usage conversion leaking a value or erasing paid calls."""
+    secret_usage = "usage-sk-secret-must-not-survive"
+    client = FixtureClient(
+        [
+            chat_response(
+                fixture_response("ai_news_response.json"),
+                usage={"prompt_tokens": 17, "completion_tokens": 5},
+            ),
+            chat_response(
+                "not-json",
+                usage={"prompt_tokens": 3, "completion_tokens": 2},
+            ),
+            chat_response(
+                fixture_response("ai_repos_response.json"),
+                usage={"prompt_tokens": secret_usage, "completion_tokens": 7},
+            ),
+        ]
+    )
+
+    with pytest.raises(AIEnrichmentError, match="usage data is invalid") as error:
+        AIEnricher(client, settings()).enrich(
+            [news_cluster()], [ranked_repo()], mode="full"
+        )
+
+    assert [
+        (
+            record.stage,
+            record.call_count,
+            record.input_cache_miss_tokens,
+            record.output_tokens,
+            record.is_complete,
+        )
+        for record in error.value.usage
+    ] == [
+        ("news", 1, 17, 5, True),
+        ("github", 2, 3, 9, False),
+    ]
+    rendered = "".join(traceback.format_exception(error.value))
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert secret_usage not in str(error.value)
+    assert secret_usage not in rendered
+
+
+def test_missing_usage_records_the_paid_call_as_incomplete() -> None:
+    """Would catch a paid response with no usage being mislabeled as complete zero cost."""
+    response_without_usage = {
+        "choices": [
+            {"message": {"content": fixture_response("ai_news_response.json")}}
+        ]
+    }
+    client = FixtureClient([response_without_usage])
+
+    with pytest.raises(AIEnrichmentError, match="usage data is invalid") as error:
+        AIEnricher(client, settings()).enrich([news_cluster()], [], mode="full")
+
+    assert len(error.value.usage) == 1
+    assert error.value.usage[0].call_count == 1
+    assert error.value.usage[0].is_complete is False
+
+
+def test_hostile_usage_scalar_cannot_raise_or_leak_during_conversion() -> None:
+    """Would catch provider string subclasses executing or leaking through token coercion."""
+    secret_usage = "usage-sk-secret-from-strip"
+
+    class HostileToken(str):
+        def strip(self, *_: object, **__: object) -> str:
+            raise ValueError(secret_usage)
+
+    client = FixtureClient(
+        [
+            chat_response(
+                fixture_response("ai_news_response.json"),
+                usage={
+                    "prompt_tokens": HostileToken("17"),
+                    "completion_tokens": 5,
+                },
+            )
+        ]
+    )
+
+    with pytest.raises(AIEnrichmentError, match="usage data is invalid") as error:
+        AIEnricher(client, settings()).enrich([news_cluster()], [], mode="full")
+
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert secret_usage not in "".join(traceback.format_exception(error.value))
 
 
 def test_maps_responses_style_usage_fields() -> None:

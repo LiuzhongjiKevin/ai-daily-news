@@ -266,6 +266,8 @@ class DailyPipeline:
             usage = [*error.usage, *fallback_usage]
 
         cost = calculate_cost(usage, self.prices)
+        if not cost.is_complete:
+            warnings.append("AI usage data incomplete; reported cost is a lower bound")
         digest = Digest(
             local_date=local_date,
             news=news,
@@ -348,6 +350,7 @@ class DailyPipeline:
             "currency": cost.currency,
             "total": str(cost.total),
             "thirty_day_projection": str(cost.thirty_day_projection),
+            "is_complete": cost.is_complete,
             "usage": [
                 {
                     "stage": record.stage,
@@ -356,6 +359,7 @@ class DailyPipeline:
                     "input_cache_hit_tokens": record.input_cache_hit_tokens,
                     "input_cache_miss_tokens": record.input_cache_miss_tokens,
                     "output_tokens": record.output_tokens,
+                    "is_complete": record.is_complete,
                 }
                 for record in usage
             ],

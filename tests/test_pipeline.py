@@ -2,11 +2,12 @@ import json
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
-from ai_daily.ai import AIEnrichmentError, OffEnricher
+from ai_daily.ai import AIEnricher, AIEnrichmentError, OffEnricher
 from ai_daily.collectors import github
 from ai_daily.config import AppSettings, ModelPrice, PricingTable
 from ai_daily.mail import MailSendError
@@ -348,9 +349,95 @@ def test_ai_enrichment_error_falls_back_but_preserves_paid_usage_and_cost(tmp_pa
             "input_cache_hit_tokens": 0,
             "input_cache_miss_tokens": 0,
             "output_tokens": 10,
+            "is_complete": True,
         }
     ]
     assert failing.calls == 1
+
+
+def test_malformed_github_usage_falls_back_with_known_lower_bound_and_no_secret(
+    tmp_path: Path,
+) -> None:
+    """Would catch later malformed usage losing calls, known cost, or deterministic fallback."""
+    from ai_daily.pipeline import RunOptions
+
+    secret_usage = "usage-sk-secret-must-not-survive"
+
+    class MalformedUsageClient:
+        def __init__(self) -> None:
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs: object) -> dict[str, object]:
+            messages = kwargs["messages"]
+            prompt = str(messages[1]["content"])  # type: ignore[index]
+            payload = json.loads(prompt.splitlines()[-1])
+            if "selected_cluster_ids" in prompt:
+                cluster_id = payload[0]["cluster_id"]
+                content = json.dumps(
+                    {
+                        "selected_cluster_ids": [cluster_id],
+                        "items": [
+                            {
+                                "cluster_id": cluster_id,
+                                "summary": "模型摘要",
+                                "why_it_matters": "模型价值",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                usage: dict[str, object] = {
+                    "prompt_tokens": 17,
+                    "completion_tokens": 5,
+                }
+            else:
+                repository = payload[0]["repository"]
+                content = json.dumps(
+                    {
+                        "items": [
+                            {"repository": repository, "explanation": "项目说明"}
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+                usage = {
+                    "prompt_tokens": secret_usage,
+                    "completion_tokens": 7,
+                }
+            return {"choices": [{"message": {"content": content}}], "usage": usage}
+
+    enricher = AIEnricher(
+        MalformedUsageClient(),
+        AppSettings(ai_model="test-model", ai_max_output_tokens=256),
+    )
+
+    result = make_pipeline(
+        tmp_path,
+        enricher=enricher,
+        off_enricher=OffEnricher(),
+    ).run(RunOptions())
+
+    assert result.warnings == [
+        "AI enrichment failed; deterministic fallback used",
+        "AI usage data incomplete; reported cost is a lower bound",
+    ]
+    assert [(record.stage, record.call_count, record.is_complete) for record in result.usage] == [
+        ("news", 1, True),
+        ("github", 1, False),
+    ]
+    assert result.usage[1].output_tokens == 7
+    assert result.estimated_cost == Decimal("0.000012")
+    archive = result.markdown_path.read_text("utf-8") if result.markdown_path else ""
+    assert "事件概述：" in archive
+    assert "项目概览：" in archive
+    assert "成本下限" in archive
+    report_path = tmp_path / "output" / "preview" / "cost-report.json"
+    report = json.loads(report_path.read_text("utf-8"))
+    assert report["is_complete"] is False
+    assert report["usage"][1]["is_complete"] is False
+    for artifact in (tmp_path / "output").rglob("*"):
+        if artifact.is_file():
+            assert secret_usage not in artifact.read_text("utf-8")
 
 
 def test_github_transport_failure_uses_newest_cached_snapshot_and_exposes_date(tmp_path: Path) -> None:
@@ -609,7 +696,13 @@ def test_output_paths_are_atomic_and_cost_report_contains_only_safe_allowlisted_
         report_path,
     ]
     assert not list((tmp_path / "output").rglob("*.tmp"))
-    assert set(report) == {"currency", "total", "thirty_day_projection", "usage"}
+    assert set(report) == {
+        "currency",
+        "total",
+        "thirty_day_projection",
+        "is_complete",
+        "usage",
+    }
     assert set(report["usage"][0]) == {
         "stage",
         "model",
@@ -617,6 +710,7 @@ def test_output_paths_are_atomic_and_cost_report_contains_only_safe_allowlisted_
         "input_cache_hit_tokens",
         "input_cache_miss_tokens",
         "output_tokens",
+        "is_complete",
     }
     assert "test-token" not in report_path.read_text("utf-8")
     assert "example.test" not in report_path.read_text("utf-8")

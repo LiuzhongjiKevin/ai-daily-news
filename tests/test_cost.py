@@ -54,6 +54,25 @@ def test_usage_record_defaults_to_one_call_for_backward_compatibility() -> None:
     record = UsageRecord(stage="news", model="deepseek-v4-flash")
 
     assert record.call_count == 1
+    assert record.is_complete is True
+
+
+def test_incomplete_usage_marks_priced_total_as_a_lower_bound() -> None:
+    """Would catch known tokens being priced as if missing provider usage were complete."""
+    report = calculate_cost(
+        [
+            UsageRecord(
+                stage="github",
+                model="deepseek-v4-flash",
+                output_tokens=10,
+                is_complete=False,
+            )
+        ],
+        prices(),
+    )
+
+    assert report.total == Decimal("0.000013")
+    assert report.is_complete is False
 
 
 def test_quantizes_totals_to_six_decimal_places() -> None:

@@ -50,9 +50,10 @@ class UsageRecord(BaseModel):
     stage: str
     model: str
     call_count: int = Field(default=1, ge=1)
-    input_cache_hit_tokens: int = 0
-    input_cache_miss_tokens: int = 0
-    output_tokens: int = 0
+    input_cache_hit_tokens: int = Field(default=0, ge=0)
+    input_cache_miss_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    is_complete: bool = True
 
 
 class Digest(BaseModel):

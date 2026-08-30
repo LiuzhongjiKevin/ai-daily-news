@@ -120,6 +120,24 @@ def test_renders_subject_all_formats_and_digest_details(templates_dir: Path) -> 
     assert "## GitHub" in rendered.markdown
 
 
+def test_incomplete_usage_visibly_labels_cost_as_a_lower_bound(templates_dir: Path) -> None:
+    """Would catch an estimated partial token bill being presented as a complete cost."""
+    usage = [
+        UsageRecord(
+            stage="github",
+            model="deepseek-chat",
+            output_tokens=10,
+            is_complete=False,
+        )
+    ]
+
+    rendered = render_digest(_digest(usage=usage), _cost(usage), templates_dir)
+
+    for output in (rendered.html, rendered.text, rendered.markdown):
+        assert "用量不完整" in output
+        assert "成本下限" in output
+
+
 def test_escapes_content_and_refuses_unsafe_links(templates_dir: Path) -> None:
     """Would catch fetched or model text becoming executable HTML or a clickable unsafe URL."""
     digest = _digest()

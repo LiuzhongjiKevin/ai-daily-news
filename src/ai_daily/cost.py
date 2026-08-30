@@ -18,6 +18,7 @@ class CostReport(BaseModel):
     total: Decimal
     thirty_day_projection: Decimal
     by_stage: dict[str, Decimal]
+    is_complete: bool = True
 
 
 def _quantize(amount: Decimal) -> Decimal:
@@ -47,4 +48,5 @@ def calculate_cost(usage: list[UsageRecord], prices: PricingTable) -> CostReport
         total=total,
         thirty_day_projection=_quantize(total * Decimal(30)),
         by_stage=quantized_by_stage,
+        is_complete=all(record.is_complete for record in usage),
     )
