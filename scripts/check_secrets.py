@@ -7,7 +7,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-SECRET_NAMES = ("DEEPSEEK_API_KEY", "MS_CLIENT_ID", "MS_TOKEN_KEY", "OUTLOOK_SENDER", "MAIL_TO")
+SECRET_NAMES = (
+    "DEEPSEEK_API_KEY",
+    "MS_CLIENT_ID",
+    "MS_TOKEN_KEY",
+    "OUTLOOK_SENDER",
+    "MAIL_TO",
+    "AI_DAILY_STATE_TOKEN",
+)
 
 
 class SecretScanError(RuntimeError):

@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).parents[1]
+AUTHORIZED_SHA = "a" * 40
 
 
 def load_workflow(name: str) -> dict[object, object]:
@@ -111,7 +112,10 @@ def test_daily_schedule_manual_inputs_and_state_commit_are_restricted() -> None:
     assert len(commits) == 3
     assert "git add -- data/ digests/ data/microsoft-token.enc" in commits[-1]
     assert all("git add -A" not in commit for commit in commits)
-    assert all("git pull --rebase --autostash" in commit for commit in commits)
+    assert all("git pull" not in commit for commit in commits)
+    assert all('git push origin HEAD:"refs/heads/${DEFAULT_BRANCH}"' in commit for commit in commits)
+    assert all("--force" not in commit for commit in commits)
+    assert "Refusing to send without a new local reservation." in commits[0]
 
 
 def test_scheduled_delivery_requires_explicit_repository_variable_gate() -> None:
@@ -216,14 +220,19 @@ def test_production_authority_gate_uses_trusted_default_branch_event_metadata(
         "GITHUB_EVENT_NAME": event_name,
         "GITHUB_REF": ref,
         "GITHUB_REF_TYPE": ref_type,
-        "GITHUB_SHA": "trusted-default-sha",
+        "GITHUB_SHA": AUTHORIZED_SHA,
         "DEFAULT_BRANCH": "main",
         "GITHUB_REPOSITORY": "owner/repository",
         "TRIGGER_EVENT": trigger_event,
         "TRIGGER_HEAD_BRANCH": trigger_branch,
-        "TRIGGER_HEAD_SHA": "trusted-default-sha",
+        "TRIGGER_HEAD_SHA": AUTHORIZED_SHA,
         "TRIGGER_HEAD_REPOSITORY": trigger_repository,
         "TRIGGER_CONCLUSION": "success",
+        "EXPECTED_TRIGGER_WORKFLOW_NAME": "AI Daily Request",
+        "EXPECTED_TRIGGER_WORKFLOW_PATH": ".github/workflows/request.yml",
+        "TRIGGER_WORKFLOW_NAME": "AI Daily Request",
+        "TRIGGER_WORKFLOW_PATH": ".github/workflows/request.yml",
+        "TRIGGER_WORKFLOW_ID": "123456",
         "GITHUB_OUTPUT": str(output),
     }
 
@@ -239,7 +248,10 @@ def test_production_authority_gate_uses_trusted_default_branch_event_metadata(
     assert completed.returncode == 0, case
     assert completed.stdout == ""
     assert completed.stderr == ""
-    assert output.read_text(encoding="utf-8") == f"trusted={str(trusted).lower()}\n"
+    expected_sha = AUTHORIZED_SHA if trusted else ""
+    assert output.read_text(encoding="utf-8") == (
+        f"trusted={str(trusted).lower()}\nauthorized_sha={expected_sha}\n"
+    )
 
 
 def test_production_authority_rejects_same_named_tag_or_stale_ref_at_another_sha(
@@ -252,14 +264,19 @@ def test_production_authority_rejects_same_named_tag_or_stale_ref_at_another_sha
         "GITHUB_EVENT_NAME": "workflow_run",
         "GITHUB_REF": "refs/heads/main",
         "GITHUB_REF_TYPE": "branch",
-        "GITHUB_SHA": "trusted-default-branch-sha",
+        "GITHUB_SHA": AUTHORIZED_SHA,
         "DEFAULT_BRANCH": "main",
         "GITHUB_REPOSITORY": "owner/repository",
         "TRIGGER_EVENT": "workflow_dispatch",
         "TRIGGER_HEAD_BRANCH": "main",
         "TRIGGER_HEAD_REPOSITORY": "owner/repository",
-        "TRIGGER_HEAD_SHA": "different-tag-or-stale-sha",
+        "TRIGGER_HEAD_SHA": "b" * 40,
         "TRIGGER_CONCLUSION": "success",
+        "EXPECTED_TRIGGER_WORKFLOW_NAME": "AI Daily Request",
+        "EXPECTED_TRIGGER_WORKFLOW_PATH": ".github/workflows/request.yml",
+        "TRIGGER_WORKFLOW_NAME": "AI Daily Request",
+        "TRIGGER_WORKFLOW_PATH": ".github/workflows/request.yml",
+        "TRIGGER_WORKFLOW_ID": "123456",
         "GITHUB_OUTPUT": str(output),
     }
 
@@ -275,7 +292,97 @@ def test_production_authority_rejects_same_named_tag_or_stale_ref_at_another_sha
     assert completed.returncode == 0
     assert completed.stdout == ""
     assert completed.stderr == ""
-    assert output.read_text(encoding="utf-8") == "trusted=false\n"
+    assert output.read_text(encoding="utf-8") == "trusted=false\nauthorized_sha=\n"
+
+
+@pytest.mark.parametrize(
+    ("name", "path", "workflow_id"),
+    [
+        ("Wrong Request", ".github/workflows/request.yml", "123456"),
+        ("AI Daily Request", ".github/workflows/other.yml", "123456"),
+        ("AI Daily Request", "", "123456"),
+        ("AI Daily Request", ".github/workflows/request.yml", ""),
+        ("AI Daily Request", ".github/workflows/request.yml", "0"),
+        ("AI Daily Request", ".github/workflows/request.yml", "12x"),
+    ],
+)
+def test_production_authority_rejects_wrong_or_malformed_workflow_identity(
+    tmp_path: Path, name: str, path: str, workflow_id: str
+) -> None:
+    """Would catch a same-name or same-path workflow impersonating a trusted request."""
+    output = tmp_path / "github-output.txt"
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "check_production_authority.py")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "GITHUB_EVENT_NAME": "workflow_run",
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_REF_TYPE": "branch",
+            "GITHUB_SHA": AUTHORIZED_SHA,
+            "DEFAULT_BRANCH": "main",
+            "GITHUB_REPOSITORY": "owner/repository",
+            "TRIGGER_EVENT": "workflow_dispatch",
+            "TRIGGER_HEAD_BRANCH": "main",
+            "TRIGGER_HEAD_SHA": AUTHORIZED_SHA,
+            "TRIGGER_HEAD_REPOSITORY": "owner/repository",
+            "TRIGGER_CONCLUSION": "success",
+            "EXPECTED_TRIGGER_WORKFLOW_NAME": "AI Daily Request",
+            "EXPECTED_TRIGGER_WORKFLOW_PATH": ".github/workflows/request.yml",
+            "TRIGGER_WORKFLOW_NAME": name,
+            "TRIGGER_WORKFLOW_PATH": path,
+            "TRIGGER_WORKFLOW_ID": workflow_id,
+            "GITHUB_OUTPUT": str(output),
+        },
+        timeout=5,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+    assert output.read_text(encoding="utf-8") == "trusted=false\nauthorized_sha=\n"
+
+
+@pytest.mark.parametrize("repository", ["", "owner", "owner/repo/extra", "owner\n/repository"])
+def test_production_authority_rejects_equal_but_malformed_repository_metadata(
+    tmp_path: Path, repository: str
+) -> None:
+    """Would catch missing or malformed repository fields authorizing merely because they match."""
+    output = tmp_path / "github-output.txt"
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "check_production_authority.py")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "GITHUB_EVENT_NAME": "workflow_run",
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_REF_TYPE": "branch",
+            "GITHUB_SHA": AUTHORIZED_SHA,
+            "DEFAULT_BRANCH": "main",
+            "GITHUB_REPOSITORY": repository,
+            "TRIGGER_EVENT": "workflow_dispatch",
+            "TRIGGER_HEAD_BRANCH": "main",
+            "TRIGGER_HEAD_SHA": AUTHORIZED_SHA,
+            "TRIGGER_HEAD_REPOSITORY": repository,
+            "TRIGGER_CONCLUSION": "success",
+            "EXPECTED_TRIGGER_WORKFLOW_NAME": "AI Daily Request",
+            "EXPECTED_TRIGGER_WORKFLOW_PATH": ".github/workflows/request.yml",
+            "TRIGGER_WORKFLOW_NAME": "AI Daily Request",
+            "TRIGGER_WORKFLOW_PATH": ".github/workflows/request.yml",
+            "TRIGGER_WORKFLOW_ID": "123456",
+            "GITHUB_OUTPUT": str(output),
+        },
+        timeout=5,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+    assert output.read_text(encoding="utf-8") == "trusted=false\nauthorized_sha=\n"
 
 
 def test_delivery_paths_require_trusted_ref_but_preview_remains_branch_safe() -> None:
@@ -291,6 +398,11 @@ def test_delivery_paths_require_trusted_ref_but_preview_remains_branch_safe() ->
     gate = next(step for step in authorize["steps"] if step.get("id") == "authority")
     assert gate["run"] == "python scripts/check_production_authority.py"
     assert gate["env"]["TRIGGER_HEAD_SHA"] == "${{ github.event.workflow_run.head_sha }}"
+    assert gate["env"]["TRIGGER_WORKFLOW_NAME"] == "${{ github.event.workflow_run.name }}"
+    assert gate["env"]["TRIGGER_WORKFLOW_PATH"] == "${{ github.event.workflow_run.path }}"
+    assert gate["env"]["TRIGGER_WORKFLOW_ID"] == "${{ github.event.workflow_run.workflow_id }}"
+    assert gate["env"]["EXPECTED_TRIGGER_WORKFLOW_NAME"] == "AI Daily Request"
+    assert gate["env"]["EXPECTED_TRIGGER_WORKFLOW_PATH"] == ".github/workflows/request.yml"
 
     protected_names = {
         "Reserve delivery intent",
@@ -305,7 +417,7 @@ def test_delivery_paths_require_trusted_ref_but_preview_remains_branch_safe() ->
 
     assert daily["needs"] == "authorize"
     assert daily["environment"] == "ai-daily-production"
-    assert daily["permissions"] == {"contents": "write"}
+    assert daily["permissions"] == {"contents": "read"}
     assert "needs.authorize.outputs.trusted == 'true'" in daily["if"]
     assert cost_preview["needs"] == "authorize"
     assert cost_preview["environment"] == "ai-daily-production"
@@ -363,6 +475,94 @@ def test_trusted_cost_preview_and_delivery_have_disjoint_authority() -> None:
         "GITHUB_TOKEN",
     }
     assert "ai-daily run --send" in delivery_run["run"]
+
+
+def test_builtin_tokens_are_read_only_and_state_token_is_confined_to_write_jobs() -> None:
+    """Would catch feature-authored workflow code escalating the built-in token or seeing state auth."""
+    workflow_paths = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+    serialized_by_path = {
+        path.name: yaml.safe_dump(load_workflow(path.name), sort_keys=True)
+        for path in workflow_paths
+    }
+    for path in workflow_paths:
+        workflow = load_workflow(path.name)
+        assert workflow.get("permissions", {}) in ({}, {"contents": "read"})
+        for job in workflow.get("jobs", {}).values():
+            assert job.get("permissions", {}) in ({}, {"contents": "read"})
+        assert "contents: write" not in serialized_by_path[path.name]
+
+    daily = load_workflow("daily.yml")["jobs"]
+    recovery = load_workflow("resolve-delivery.yml")["jobs"]
+    state_token = "${{ secrets.AI_DAILY_STATE_TOKEN }}"
+    assert state_token in str(daily["daily"])
+    assert state_token in str(recovery["resolve"])
+    assert daily["daily"]["environment"] == "ai-daily-production"
+    assert recovery["resolve"]["environment"] == "ai-daily-production"
+
+    allowed = {("daily.yml", "daily"), ("resolve-delivery.yml", "resolve")}
+    for path in workflow_paths:
+        for job_name, job in load_workflow(path.name).get("jobs", {}).items():
+            if (path.name, job_name) not in allowed:
+                assert "AI_DAILY_STATE_TOKEN" not in str(job)
+                assert state_token not in str(job)
+
+
+def test_production_checkouts_are_pinned_and_state_credentials_only_persist_for_git() -> None:
+    """Would catch trusted code advancing to an unvalidated mutable default-branch tip."""
+    daily = load_workflow("daily.yml")["jobs"]
+    recovery = load_workflow("resolve-delivery.yml")["jobs"]
+
+    daily_authorize_checkout = next(
+        step for step in daily["authorize"]["steps"] if "actions/checkout@" in step.get("uses", "")
+    )
+    assert daily_authorize_checkout["with"] == {
+        "ref": "${{ github.sha }}",
+        "persist-credentials": False,
+    }
+    assert daily["authorize"]["outputs"]["authorized_sha"] == (
+        "${{ steps.authority.outputs.authorized_sha }}"
+    )
+
+    for job in (daily["cost_preview"], daily["daily"], recovery["resolve"]):
+        checkout = next(
+            step for step in job["steps"] if "actions/checkout@" in step.get("uses", "")
+        )
+        assert checkout["with"]["ref"] == "${{ needs.authorize.outputs.authorized_sha }}"
+
+    preview_checkout = next(
+        step
+        for step in daily["cost_preview"]["steps"]
+        if "actions/checkout@" in step.get("uses", "")
+    )
+    assert preview_checkout["with"]["persist-credentials"] is False
+    assert "token" not in preview_checkout["with"]
+
+    for job in (daily["daily"], recovery["resolve"]):
+        checkout = next(
+            step for step in job["steps"] if "actions/checkout@" in step.get("uses", "")
+        )
+        assert checkout["with"]["token"] == "${{ secrets.AI_DAILY_STATE_TOKEN }}"
+        assert checkout["with"]["persist-credentials"] is True
+
+    for workflow_name in ("daily.yml", "resolve-delivery.yml"):
+        workflow = load_workflow(workflow_name)
+        for job in workflow["jobs"].values():
+            for step in job["steps"]:
+                if "actions/upload-artifact@" in step.get("uses", "") or step.get("name") in {
+                    "Run trusted cost preview",
+                    "Run daily digest",
+                }:
+                    assert "AI_DAILY_STATE_TOKEN" not in str(step)
+
+    recovery_authorize_checkout = next(
+        step
+        for step in recovery["authorize"]["steps"]
+        if "actions/checkout@" in step.get("uses", "")
+    )
+    assert recovery_authorize_checkout["with"] == {
+        "ref": "${{ github.sha }}",
+        "persist-credentials": False,
+    }
 
 
 @pytest.mark.parametrize(
@@ -496,7 +696,20 @@ def test_manual_resolution_workflow_is_serialized_state_only_and_default_branch_
     assert authorize["permissions"] == {"contents": "read"}
     assert "environment" not in authorize
     assert "secrets." not in str(authorize)
-    assert workflow["jobs"]["resolve"]["permissions"] == {"contents": "write"}
+    recovery_gate = next(step for step in authorize["steps"] if step.get("id") == "authority")
+    assert recovery_gate["env"]["EXPECTED_TRIGGER_WORKFLOW_NAME"] == (
+        "Resolve AI Daily Delivery Request"
+    )
+    assert recovery_gate["env"]["EXPECTED_TRIGGER_WORKFLOW_PATH"] == (
+        ".github/workflows/resolve-delivery-request.yml"
+    )
+    assert recovery_gate["env"]["TRIGGER_WORKFLOW_NAME"] == (
+        "${{ github.event.workflow_run.name }}"
+    )
+    assert recovery_gate["env"]["TRIGGER_WORKFLOW_PATH"] == (
+        "${{ github.event.workflow_run.path }}"
+    )
+    assert workflow["jobs"]["resolve"]["permissions"] == {"contents": "read"}
     assert workflow["jobs"]["resolve"]["environment"] == "ai-daily-production"
     assert workflow["jobs"]["resolve"]["needs"] == "authorize"
     assert "needs.authorize.outputs.trusted == 'true'" in workflow["jobs"]["resolve"]["if"]
@@ -516,7 +729,32 @@ def test_manual_resolution_workflow_is_serialized_state_only_and_default_branch_
     assert "git add -- data/state.json" in state_commit["run"]
     assert "git add -A" not in state_commit["run"]
     assert "git push --force" not in state_commit["run"]
-    assert "git push origin HEAD:" in state_commit["run"]
+    assert "git pull" not in state_commit["run"]
+    assert 'git push origin HEAD:"refs/heads/${DEFAULT_BRANCH}"' in state_commit["run"]
+
+
+def test_remote_default_is_verified_before_first_production_mutation() -> None:
+    """Would catch a protected branch advancing after authorization but before state mutation."""
+    daily_steps = load_workflow("daily.yml")["jobs"]["daily"]["steps"]
+    resolve_steps = load_workflow("resolve-delivery.yml")["jobs"]["resolve"]["steps"]
+
+    daily_verify = next(
+        index for index, step in enumerate(daily_steps) if step.get("name") == "Verify immutable default tip"
+    )
+    daily_reserve = next(
+        index for index, step in enumerate(daily_steps) if step.get("name") == "Reserve delivery intent"
+    )
+    recovery_verify = next(
+        index for index, step in enumerate(resolve_steps) if step.get("name") == "Verify immutable default tip"
+    )
+    recovery_mutate = next(
+        index for index, step in enumerate(resolve_steps) if step.get("name") == "Resolve delivery state"
+    )
+
+    assert daily_verify < daily_reserve
+    assert recovery_verify < recovery_mutate
+    for steps, index in ((daily_steps, daily_verify), (resolve_steps, recovery_verify)):
+        assert steps[index]["run"] == "python scripts/check_remote_default.py"
 
 
 def test_manual_resolution_dispatch_accepts_only_retry_and_sent() -> None:
@@ -654,6 +892,7 @@ def test_operator_guide_contains_private_outlook_and_safety_invariants() -> None
     for phrase in (
         "私有仓库",
         "MS_TOKEN_KEY",
+        "AI_DAILY_STATE_TOKEN",
         "GITHUB_TOKEN",
         "仅表示 Microsoft Graph 已接受/排队",
         "首次运行成本审阅",
@@ -669,6 +908,9 @@ def test_operator_guide_contains_private_outlook_and_safety_invariants() -> None
         "requirements-prod.lock",
         "--no-deps --no-build-isolation -e .",
         "可编辑仓库检出",
+        "Read repository contents and packages",
+        "AI_DAILY_STATE_TOKEN",
+        "必须",
     ):
         assert phrase in guide
 

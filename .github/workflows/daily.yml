@@ -24,13 +24,15 @@ jobs:
       contents: read
     outputs:
       trusted: ${{ steps.authority.outputs.trusted }}
+      authorized_sha: ${{ steps.authority.outputs.authorized_sha }}
       mode: ${{ steps.request.outputs.mode }}
       send: ${{ steps.request.outputs.send || 'false' }}
       force: ${{ steps.request.outputs.force || 'false' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.12"
@@ -43,6 +45,11 @@ jobs:
           TRIGGER_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           TRIGGER_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
           TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          EXPECTED_TRIGGER_WORKFLOW_NAME: AI Daily Request
+          EXPECTED_TRIGGER_WORKFLOW_PATH: .github/workflows/request.yml
+          TRIGGER_WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          TRIGGER_WORKFLOW_PATH: ${{ github.event.workflow_run.path }}
+          TRIGGER_WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
         run: python scripts/check_production_authority.py
       - name: Parse trusted daily request
         id: request
@@ -68,7 +75,8 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ needs.authorize.outputs.authorized_sha }}
+          persist-credentials: false
       - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.12"
@@ -96,19 +104,25 @@ jobs:
     runs-on: ubuntu-latest
     environment: ai-daily-production
     permissions:
-      contents: write
+      contents: read
     env:
       AI_DAILY_ATTEMPT_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      AUTHORIZED_SHA: ${{ needs.authorize.outputs.authorized_sha }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ needs.authorize.outputs.authorized_sha }}
+          token: ${{ secrets.AI_DAILY_STATE_TOKEN }}
+          persist-credentials: true
       - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install --requirement requirements-prod.lock
       - run: python -m pip install --no-deps --no-build-isolation -e .
+      - name: Verify immutable default tip
+        run: python scripts/check_remote_default.py
       - name: Reserve delivery intent
         id: reserve
         if: needs.authorize.outputs.trusted == 'true'
@@ -125,18 +139,17 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
           git add -- data/state.json
           if git diff --cached --quiet; then
-            echo "Reservation already durable."
-            exit 0
+            echo "Refusing to send without a new local reservation." >&2
+            exit 1
           fi
           if git diff --cached --name-only | grep -Ev '^data/state\.json$' >/dev/null; then
             echo "Refusing to commit an unexpected reservation path." >&2
             exit 1
           fi
           git commit -m "chore: reserve AI daily delivery"
-          git push origin HEAD:"${GITHUB_REF_NAME}"
+          git push origin HEAD:"refs/heads/${DEFAULT_BRANCH}"
       - name: Run daily digest
         id: digest
         if: >-
@@ -177,7 +190,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
           git add -- data/state.json
           if git diff --cached --quiet; then
             echo "No cleanup state changes to commit."
@@ -188,7 +200,7 @@ jobs:
             exit 1
           fi
           git commit -m "chore: release unattempted AI daily delivery"
-          git push origin HEAD:"${GITHUB_REF_NAME}"
+          git push origin HEAD:"refs/heads/${DEFAULT_BRANCH}"
       - name: Commit accepted state
         if: >-
           always() &&
@@ -198,7 +210,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
           git add -- data/ digests/ data/microsoft-token.enc
           if git diff --cached --quiet; then
             echo "No durable state changes to commit."
@@ -209,7 +220,7 @@ jobs:
             exit 1
           fi
           git commit -m "chore: update AI daily state"
-          git push origin HEAD:"${GITHUB_REF_NAME}"
+          git push origin HEAD:"refs/heads/${DEFAULT_BRANCH}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:

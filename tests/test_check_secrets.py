@@ -57,6 +57,13 @@ def test_scan_allows_nonmatching_nonempty_secret(monkeypatch: pytest.MonkeyPatch
     assert module.main() == 0
 
 
+def test_state_write_credential_is_in_the_scanner_contract() -> None:
+    """Would catch the separate production git credential being omitted from leak scans."""
+    module = load_module()
+
+    assert "AI_DAILY_STATE_TOKEN" in module.SECRET_NAMES
+
+
 def test_tracked_paths_uses_git_nul_delimited_output_without_losing_whitespace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -149,7 +149,7 @@ def test_validate_sources_threshold_writes_redacted_markdown_summary(
     summary = tmp_path / "summary.md"
     secret = "source-validation-secret"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-    monkeypatch.setenv("DEEPSEEK_API_KEY", secret)
+    monkeypatch.setenv("AI_DAILY_STATE_TOKEN", secret)
     monkeypatch.setattr(
         "ai_daily.cli.validate_sources",
         lambda: [
