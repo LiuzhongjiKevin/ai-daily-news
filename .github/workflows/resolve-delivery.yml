@@ -64,19 +64,26 @@ jobs:
           RESOLUTION: ${{ inputs.resolution }}
           MESSAGE_ID: ${{ inputs.message_id }}
         run: |
-          if [ "${RESOLUTION}" = "sent" ]; then
-            if [ -z "${MESSAGE_ID}" ]; then
-              echo "A safe message fingerprint is required for sent." >&2
+          case "${RESOLUTION:-}" in
+            retry)
+              if [ -n "${MESSAGE_ID}" ]; then
+                echo "Retry does not accept a message fingerprint." >&2
+                exit 1
+              fi
+              ai-daily resolve-delivery retry --date "${DELIVERY_DATE}" --confirm-owner-terminal
+              ;;
+            sent)
+              if [ -z "${MESSAGE_ID}" ]; then
+                echo "A safe message fingerprint is required for sent." >&2
+                exit 1
+              fi
+              ai-daily resolve-delivery sent --date "${DELIVERY_DATE}" --message-id "${MESSAGE_ID}" --confirm-owner-terminal
+              ;;
+            *)
+              echo "Unsupported delivery resolution." >&2
               exit 1
-            fi
-            ai-daily resolve-delivery sent --date "${DELIVERY_DATE}" --message-id "${MESSAGE_ID}" --confirm-owner-terminal
-          else
-            if [ -n "${MESSAGE_ID}" ]; then
-              echo "Retry does not accept a message fingerprint." >&2
-              exit 1
-            fi
-            ai-daily resolve-delivery retry --date "${DELIVERY_DATE}" --confirm-owner-terminal
-          fi
+              ;;
+          esac
       - name: Commit resolved state
         if: >-
           steps.delivery_ref.outputs.trusted == 'true' &&

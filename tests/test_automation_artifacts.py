@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -210,6 +211,28 @@ def test_manual_resolution_workflow_is_serialized_state_only_and_default_branch_
     assert "git add -A" not in state_commit["run"]
     assert "git push --force" not in state_commit["run"]
     assert "git push origin HEAD:" in state_commit["run"]
+
+
+def test_manual_resolution_dispatch_accepts_only_retry_and_sent() -> None:
+    """Would catch an unknown or missing resolution falling through to a state mutation."""
+    steps = load_workflow("resolve-delivery.yml")["jobs"]["resolve"]["steps"]
+    command = next(step["run"] for step in steps if step.get("name") == "Resolve delivery state")
+    branches = dict(
+        re.findall(
+            r"^\s*([^()\s]+)\)\s*$\n(.*?)^\s*;;\s*$",
+            command,
+            flags=re.MULTILINE | re.DOTALL,
+        )
+    )
+
+    assert 'case "${RESOLUTION:-}" in' in command
+    assert list(branches) == ["retry", "sent", "*"]
+    assert "resolve-delivery retry" in branches["retry"]
+    assert "resolve-delivery sent" not in branches["retry"]
+    assert "resolve-delivery sent" in branches["sent"]
+    assert "resolve-delivery retry" not in branches["sent"]
+    assert "ai-daily" not in branches["*"]
+    assert "exit 1" in branches["*"]
 
 
 def test_daily_delivery_concurrency_is_shared_across_all_repository_refs() -> None:
