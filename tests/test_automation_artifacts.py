@@ -31,8 +31,21 @@ def test_ci_is_offline_and_uses_reviewed_action_pins() -> None:
 
 def test_daily_uses_all_reviewed_action_pins() -> None:
     """Would catch a mutable artifact action reference bypassing the reviewed supply-chain pin."""
-    steps = load_workflow("daily.yml")["jobs"]["daily"]["steps"]
-    assert [step["uses"] for step in steps if "uses" in step] == [
+    workflow = load_workflow("daily.yml")
+    daily_steps = workflow["jobs"]["daily"]["steps"]
+    preview_steps = workflow["jobs"]["cost_preview"]["steps"]
+    request_steps = load_workflow("request.yml")["jobs"]["safe_preview"]["steps"]
+    assert [step["uses"] for step in daily_steps if "uses" in step] == [
+        "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38",
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+    ]
+    assert [step["uses"] for step in preview_steps if "uses" in step] == [
+        "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38",
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+    ]
+    assert [step["uses"] for step in request_steps if "uses" in step] == [
         "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
         "actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38",
         "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
@@ -43,14 +56,22 @@ def test_workflows_install_exact_locked_dependency_sets_before_editable_package(
     """Would catch Actions resolving broad package ranges instead of the reviewed lock files."""
     ci_steps = load_workflow("ci.yml")["jobs"]["test"]["steps"]
     daily_steps = load_workflow("daily.yml")["jobs"]["daily"]["steps"]
+    cost_preview_steps = load_workflow("daily.yml")["jobs"]["cost_preview"]["steps"]
+    request_steps = load_workflow("request.yml")["jobs"]["safe_preview"]["steps"]
     ci_commands = "\n".join(step.get("run", "") for step in ci_steps)
     daily_commands = "\n".join(step.get("run", "") for step in daily_steps)
+    cost_preview_commands = "\n".join(step.get("run", "") for step in cost_preview_steps)
+    request_commands = "\n".join(step.get("run", "") for step in request_steps)
 
     assert "pip install --requirement requirements-dev.lock" in ci_commands
     assert 'pip install --no-deps --no-build-isolation -e ".[dev]"' in ci_commands
     assert "pip install --requirement requirements-prod.lock" in daily_commands
     assert 'pip install --no-deps --no-build-isolation -e .' in daily_commands
     assert ".[dev]" not in daily_commands
+    for commands in (cost_preview_commands, request_commands):
+        assert "pip install --requirement requirements-prod.lock" in commands
+        assert 'pip install --no-deps --no-build-isolation -e .' in commands
+        assert ".[dev]" not in commands
 
     for lock_name in ("requirements-prod.lock", "requirements-dev.lock"):
         lines = (ROOT / lock_name).read_text(encoding="utf-8").splitlines()
@@ -66,11 +87,21 @@ def test_daily_schedule_manual_inputs_and_state_commit_are_restricted() -> None:
         {"cron": "47 6 * * *", "timezone": "Asia/Shanghai"},
         {"cron": "22 7 * * *", "timezone": "Asia/Shanghai"},
     ]
-    assert workflow["permissions"] == {"contents": "write"}
+    assert trigger["workflow_run"] == {
+        "workflows": ["AI Daily Request"],
+        "types": ["completed"],
+    }
+    assert "workflow_dispatch" not in trigger
+    assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"]["cancel-in-progress"] is False
     steps = workflow["jobs"]["daily"]["steps"]
     command = next(step["run"] for step in steps if step.get("name") == "Run daily digest")
-    assert 'github.event_name' in command and 'ai-daily run --send' in command
+    assert workflow["jobs"]["authorize"]["outputs"]["mode"] == "${{ steps.request.outputs.mode }}"
+    assert 'if [ "${{ github.event_name }}" = "workflow_run" ]; then' in command
+    assert 'mode_arg="--ai-mode ${{ needs.authorize.outputs.mode }}"' in command
+    assert "${mode_arg}" in command
+    assert "needs.authorize.outputs.mode" in command
+    assert "ai-daily run --send" in command
     commits = [
         step["run"]
         for step in steps
@@ -87,40 +118,117 @@ def test_scheduled_delivery_requires_explicit_repository_variable_gate() -> None
     """Would catch a default-branch push activating scheduled sends before cost review."""
     workflow = load_workflow("daily.yml")
     gate = workflow["jobs"]["daily"]["if"]
-    assert "github.event_name != 'schedule'" in gate
+    assert "github.event_name == 'schedule'" in gate
     assert "vars.AI_DAILY_SCHEDULE_ENABLED == 'true'" in gate
+    assert "needs.authorize.outputs.send == 'true'" in gate
 
 
 @pytest.mark.parametrize(
-    ("case", "ref", "ref_type", "default_branch", "trusted"),
+    (
+        "case",
+        "event_name",
+        "ref",
+        "ref_type",
+        "trigger_event",
+        "trigger_branch",
+        "trigger_repository",
+        "trusted",
+    ),
     [
-        ("scheduled default", "refs/heads/main", "branch", "main", True),
-        ("manual default", "refs/heads/main", "branch", "main", True),
-        ("ordinary feature", "refs/heads/feature/safe-preview", "branch", "main", False),
-        ("case collision", "refs/heads/Main", "branch", "main", False),
-        ("same-named tag", "refs/tags/main", "tag", "main", False),
+        ("scheduled default", "schedule", "refs/heads/main", "branch", "", "", "", True),
+        (
+            "manual default",
+            "workflow_run",
+            "refs/heads/main",
+            "branch",
+            "workflow_dispatch",
+            "main",
+            "owner/repository",
+            True,
+        ),
+        (
+            "ordinary feature",
+            "workflow_run",
+            "refs/heads/main",
+            "branch",
+            "workflow_dispatch",
+            "feature/safe-preview",
+            "owner/repository",
+            False,
+        ),
+        (
+            "case collision",
+            "workflow_run",
+            "refs/heads/main",
+            "branch",
+            "workflow_dispatch",
+            "Main",
+            "owner/repository",
+            False,
+        ),
+        (
+            "same-named tag",
+            "workflow_run",
+            "refs/heads/main",
+            "branch",
+            "workflow_dispatch",
+            "",
+            "owner/repository",
+            False,
+        ),
+        (
+            "foreign repository",
+            "workflow_run",
+            "refs/heads/main",
+            "branch",
+            "workflow_dispatch",
+            "main",
+            "other/repository",
+            False,
+        ),
+        (
+            "wrong trigger event",
+            "workflow_run",
+            "refs/heads/main",
+            "branch",
+            "push",
+            "main",
+            "owner/repository",
+            False,
+        ),
     ],
 )
-def test_delivery_ref_gate_uses_exact_full_branch_ref(
+def test_production_authority_gate_uses_trusted_default_branch_event_metadata(
     tmp_path: Path,
     case: str,
+    event_name: str,
     ref: str,
     ref_type: str,
-    default_branch: str,
+    trigger_event: str,
+    trigger_branch: str,
+    trigger_repository: str,
     trusted: bool,
 ) -> None:
-    """Would catch GitHub's case-insensitive expression equality authorizing another ref."""
+    """Would catch branch-authored verifier output or case-insensitive refs authorizing production."""
     output = tmp_path / "github-output.txt"
     environment = {
         **os.environ,
+        "GITHUB_EVENT_NAME": event_name,
         "GITHUB_REF": ref,
         "GITHUB_REF_TYPE": ref_type,
-        "DEFAULT_BRANCH": default_branch,
+        "GITHUB_SHA": "trusted-default-sha",
+        "DEFAULT_BRANCH": "main",
+        "GITHUB_REPOSITORY": "owner/repository",
+        "TRIGGER_EVENT": trigger_event,
+        "TRIGGER_HEAD_BRANCH": trigger_branch,
+        "TRIGGER_HEAD_SHA": "trusted-default-sha",
+        "TRIGGER_HEAD_REPOSITORY": trigger_repository,
+        "TRIGGER_CONCLUSION": "success",
         "GITHUB_OUTPUT": str(output),
     }
 
     completed = subprocess.run(
-        [sys.executable, str(ROOT / "scripts" / "check_delivery_ref.py")],
+        [sys.executable, str(ROOT / "scripts" / "check_production_authority.py")],
         check=False,
         capture_output=True,
         text=True,
@@ -134,19 +242,55 @@ def test_delivery_ref_gate_uses_exact_full_branch_ref(
     assert output.read_text(encoding="utf-8") == f"trusted={str(trusted).lower()}\n"
 
 
-def test_delivery_paths_require_trusted_ref_but_preview_remains_branch_safe() -> None:
-    """Would catch a feature branch reserving, sending, or pushing centralized state."""
-    workflow = load_workflow("daily.yml")
-    job = workflow["jobs"]["daily"]
-    steps = job["steps"]
-    gate_index = next(
-        index for index, step in enumerate(steps) if step.get("id") == "delivery_ref"
-    )
-    gate = steps[gate_index]
+def test_production_authority_rejects_same_named_tag_or_stale_ref_at_another_sha(
+    tmp_path: Path,
+) -> None:
+    """Would catch a tag reported as head_branch=main authorizing production code."""
+    output = tmp_path / "github-output.txt"
+    environment = {
+        **os.environ,
+        "GITHUB_EVENT_NAME": "workflow_run",
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_REF_TYPE": "branch",
+        "GITHUB_SHA": "trusted-default-branch-sha",
+        "DEFAULT_BRANCH": "main",
+        "GITHUB_REPOSITORY": "owner/repository",
+        "TRIGGER_EVENT": "workflow_dispatch",
+        "TRIGGER_HEAD_BRANCH": "main",
+        "TRIGGER_HEAD_REPOSITORY": "owner/repository",
+        "TRIGGER_HEAD_SHA": "different-tag-or-stale-sha",
+        "TRIGGER_CONCLUSION": "success",
+        "GITHUB_OUTPUT": str(output),
+    }
 
-    assert "github.ref_name == github.event.repository.default_branch" not in job["if"]
-    assert gate["env"] == {"DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}"}
-    assert gate["run"] == "python scripts/check_delivery_ref.py"
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "check_production_authority.py")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=5,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+    assert output.read_text(encoding="utf-8") == "trusted=false\n"
+
+
+def test_delivery_paths_require_trusted_ref_but_preview_remains_branch_safe() -> None:
+    """Would catch a branch-authored workflow receiving the production token or secrets."""
+    workflow = load_workflow("daily.yml")
+    authorize = workflow["jobs"]["authorize"]
+    daily = workflow["jobs"]["daily"]
+    cost_preview = workflow["jobs"]["cost_preview"]
+
+    assert authorize["permissions"] == {"contents": "read"}
+    assert "environment" not in authorize
+    assert "secrets." not in str(authorize)
+    gate = next(step for step in authorize["steps"] if step.get("id") == "authority")
+    assert gate["run"] == "python scripts/check_production_authority.py"
+    assert gate["env"]["TRIGGER_HEAD_SHA"] == "${{ github.event.workflow_run.head_sha }}"
 
     protected_names = {
         "Reserve delivery intent",
@@ -155,58 +299,220 @@ def test_delivery_paths_require_trusted_ref_but_preview_remains_branch_safe() ->
         "Commit unattempted cleanup",
         "Commit accepted state",
     }
-    for step in steps:
+    for step in daily["steps"]:
         if step.get("name") in protected_names:
-            assert "steps.delivery_ref.outputs.trusted == 'true'" in step["if"]
+            assert "needs.authorize.outputs.trusted == 'true'" in step["if"]
 
-    digest_index = next(
-        index for index, step in enumerate(steps) if step.get("name") == "Run daily digest"
+    assert daily["needs"] == "authorize"
+    assert daily["environment"] == "ai-daily-production"
+    assert daily["permissions"] == {"contents": "write"}
+    assert "needs.authorize.outputs.trusted == 'true'" in daily["if"]
+    assert cost_preview["needs"] == "authorize"
+    assert cost_preview["environment"] == "ai-daily-production"
+    assert cost_preview["permissions"] == {"contents": "read"}
+    assert "needs.authorize.outputs.trusted == 'true'" in cost_preview["if"]
+
+
+def test_manual_request_workflow_is_read_only_secretless_and_forces_off_preview() -> None:
+    """Would catch feature code receiving secrets, write authority, or a paid-preview mode."""
+    workflow = load_workflow("request.yml")
+    trigger = workflow[True]
+    job = workflow["jobs"]["safe_preview"]
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    serialized = yaml.safe_dump(workflow, sort_keys=True)
+
+    assert set(trigger) == {"workflow_dispatch"}
+    assert trigger["workflow_dispatch"]["inputs"]["send"]["default"] is False
+    assert workflow["permissions"] == {"contents": "read"}
+    assert job["permissions"] == {"contents": "read"}
+    assert "environment" not in job
+    assert "secrets." not in serialized
+    assert "ai-daily preview --ai-mode off" in commands
+    assert "--send" not in commands
+    assert "reserve-delivery" not in commands
+    assert "git push" not in commands
+    assert "ref_type=${{ github.ref_type }}" in workflow["run-name"]
+    assert "ref=${{ github.ref }}" in workflow["run-name"]
+    artifact = next(step for step in job["steps"] if "actions/upload-artifact@" in step.get("uses", ""))
+    assert artifact["with"]["name"] == "ai-daily-safe-preview"
+    assert artifact["with"]["path"] == "preview/"
+
+
+def test_trusted_cost_preview_and_delivery_have_disjoint_authority() -> None:
+    """Would catch Microsoft secrets or a write token entering a no-send cost preview."""
+    workflow = load_workflow("daily.yml")
+    preview = workflow["jobs"]["cost_preview"]
+    delivery = workflow["jobs"]["daily"]
+    preview_run = next(
+        step for step in preview["steps"] if step.get("name") == "Run trusted cost preview"
     )
-    digest = steps[digest_index]
-    assert gate_index < digest_index
-    assert "github.event_name == 'workflow_dispatch' && inputs.send != true" in digest["if"]
-    assert "steps.delivery_ref.outputs.trusted == 'true'" in digest["if"]
-    assert "ai-daily preview" in digest["run"]
+    delivery_run = next(
+        step for step in delivery["steps"] if step.get("name") == "Run daily digest"
+    )
+
+    assert set(preview_run["env"]) == {"DEEPSEEK_API_KEY", "GITHUB_TOKEN"}
+    assert all(name not in str(preview) for name in ("MS_CLIENT_ID", "MS_TOKEN_KEY", "OUTLOOK_SENDER", "MAIL_TO"))
+    assert "ai-daily preview" in preview_run["run"]
+    assert "--send" not in preview_run["run"]
+    assert set(delivery_run["env"]) == {
+        "DEEPSEEK_API_KEY",
+        "MS_CLIENT_ID",
+        "MS_TOKEN_KEY",
+        "OUTLOOK_SENDER",
+        "MAIL_TO",
+        "GITHUB_TOKEN",
+    }
+    assert "ai-daily run --send" in delivery_run["run"]
+
+
+@pytest.mark.parametrize(
+    ("request_type", "title", "expected"),
+    [
+        (
+            "daily",
+            (
+                "ai-daily-request|mode=economy|send=false|force=true|"
+                "ref_type=branch|ref=refs/heads/main"
+            ),
+            {"mode": "economy", "send": "false", "force": "true"},
+        ),
+        (
+            "resolve",
+            (
+                "ai-daily-resolve|date=2026-08-24|resolution=sent|"
+                "message_id=mailbox-confirmed-2026-08-24|confirm=true|"
+                "ref_type=branch|ref=refs/heads/main"
+            ),
+            {
+                "date": "2026-08-24",
+                "resolution": "sent",
+                "message_id": "mailbox-confirmed-2026-08-24",
+                "confirm": "true",
+            },
+        ),
+    ],
+)
+def test_trusted_request_parser_accepts_only_bounded_allowlisted_fields(
+    tmp_path: Path, request_type: str, title: str, expected: dict[str, str]
+) -> None:
+    """Would catch a crafted run title injecting commands or unsupported production inputs."""
+    output = tmp_path / "github-output.txt"
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "parse_trusted_request.py"), request_type],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "REQUEST_TITLE": title,
+            "DEFAULT_BRANCH": "main",
+            "GITHUB_OUTPUT": str(output),
+        },
+        timeout=5,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+    assert dict(line.split("=", 1) for line in output.read_text("utf-8").splitlines()) == expected
+
+
+@pytest.mark.parametrize(
+    ("request_type", "title"),
+    [
+        ("daily", "ai-daily-request|mode=full|send=true|force=false\ncommand=bad"),
+        ("daily", "ai-daily-request|mode=invalid|send=true|force=false"),
+        (
+            "daily",
+            (
+                "ai-daily-request|mode=full|send=true|force=false|"
+                "ref_type=tag|ref=refs/tags/main"
+            ),
+        ),
+        (
+            "resolve",
+            "ai-daily-resolve|date=2026-8-24|resolution=retry|message_id=|confirm=true",
+        ),
+        (
+            "resolve",
+            "ai-daily-resolve|date=2026-08-24|resolution=retry|message_id=unsafe@id|confirm=true",
+        ),
+    ],
+)
+def test_trusted_request_parser_rejects_malformed_or_injected_titles(
+    tmp_path: Path, request_type: str, title: str
+) -> None:
+    """Would catch malformed workflow-run metadata falling through to production commands."""
+    output = tmp_path / "github-output.txt"
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "parse_trusted_request.py"), request_type],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "REQUEST_TITLE": title,
+            "DEFAULT_BRANCH": "main",
+            "GITHUB_OUTPUT": str(output),
+        },
+        timeout=5,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+    assert not output.exists() or output.read_text("utf-8") == ""
 
 
 def test_manual_resolution_workflow_is_serialized_state_only_and_default_branch_gated() -> None:
     """Would catch operator recovery racing delivery or mutating non-state paths."""
+    request_workflow = load_workflow("resolve-delivery-request.yml")
+    request_trigger = request_workflow[True]
+    assert set(request_trigger) == {"workflow_dispatch"}
+    assert request_workflow["permissions"] == {"contents": "read"}
+    assert "secrets." not in yaml.safe_dump(request_workflow, sort_keys=True)
+    assert all(
+        job.get("permissions") == {"contents": "read"} and "environment" not in job
+        for job in request_workflow["jobs"].values()
+    )
+    assert "ref_type=${{ github.ref_type }}" in request_workflow["run-name"]
+    assert "ref=${{ github.ref }}" in request_workflow["run-name"]
+
     workflow = load_workflow("resolve-delivery.yml")
-    trigger = workflow[True]["workflow_dispatch"]["inputs"]
-    assert set(trigger) == {
-        "date",
-        "resolution",
-        "message_id",
-        "confirm_owner_terminal",
+    trigger = workflow[True]
+    assert trigger == {
+        "workflow_run": {
+            "workflows": ["Resolve AI Daily Delivery Request"],
+            "types": ["completed"],
+        }
     }
-    assert trigger["resolution"]["options"] == ["retry", "sent"]
-    assert trigger["confirm_owner_terminal"]["type"] == "boolean"
-    assert workflow["permissions"] == {"contents": "write"}
+    assert workflow["permissions"] == {"contents": "read"}
     assert workflow["concurrency"] == {
         "group": "ai-daily-delivery",
         "cancel-in-progress": False,
     }
+
+    authorize = workflow["jobs"]["authorize"]
+    assert authorize["permissions"] == {"contents": "read"}
+    assert "environment" not in authorize
+    assert "secrets." not in str(authorize)
+    assert workflow["jobs"]["resolve"]["permissions"] == {"contents": "write"}
+    assert workflow["jobs"]["resolve"]["environment"] == "ai-daily-production"
+    assert workflow["jobs"]["resolve"]["needs"] == "authorize"
+    assert "needs.authorize.outputs.trusted == 'true'" in workflow["jobs"]["resolve"]["if"]
 
     steps = workflow["jobs"]["resolve"]["steps"]
     assert [step["uses"] for step in steps if "uses" in step] == [
         "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
         "actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38",
     ]
-    ref_gate = next(step for step in steps if step.get("id") == "delivery_ref")
-    context_gate = next(
-        step for step in steps if step.get("name") == "Require trusted recovery context"
-    )
     resolution = next(step for step in steps if step.get("name") == "Resolve delivery state")
     state_commit = next(step for step in steps if step.get("name") == "Commit resolved state")
-    assert steps.index(ref_gate) < steps.index(context_gate) < steps.index(resolution)
     assert steps.index(resolution) < steps.index(state_commit)
-    assert ref_gate["run"] == "python scripts/check_delivery_ref.py"
-    assert "TRUSTED_REF" in context_gate["run"]
-    assert "OWNER_TERMINAL_CONFIRMED" in context_gate["run"]
-    assert "steps.delivery_ref.outputs.trusted == 'true'" in resolution["if"]
-    assert "inputs.confirm_owner_terminal == true" in resolution["if"]
+    assert "needs.authorize.outputs.trusted == 'true'" in resolution["if"]
+    assert "needs.authorize.outputs.confirm == 'true'" in resolution["if"]
     assert "--confirm-owner-terminal" in resolution["run"]
-    assert "steps.delivery_ref.outputs.trusted == 'true'" in state_commit["if"]
+    assert "needs.authorize.outputs.trusted == 'true'" in state_commit["if"]
     assert "git add -- data/state.json" in state_commit["run"]
     assert "git add -A" not in state_commit["run"]
     assert "git push --force" not in state_commit["run"]

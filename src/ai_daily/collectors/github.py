@@ -57,11 +57,13 @@ def _response_json(response: httpx.Response, message: str) -> object:
 
 def github_headers(token: str) -> dict[str, str]:
     """Return the required headers for a GitHub API request."""
-    return {
+    headers = {
         "Accept": GITHUB_ACCEPT,
-        "Authorization": f"Bearer {token}",
         "X-GitHub-Api-Version": GITHUB_API_VERSION,
     }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 def parse_trending(html: str) -> list[str]:
@@ -196,6 +198,11 @@ def _snapshot_from_metadata(payload: object, collected_at: datetime) -> RepoSnap
         raise GitHubDataError("GitHub repository data is invalid")
     if language is not None and not isinstance(language, str):
         raise GitHubDataError("GitHub repository data is invalid")
+    mirror_url = payload.get("mirror_url")
+    if mirror_url is not None and (
+        not isinstance(mirror_url, str) or not mirror_url.strip()
+    ):
+        raise GitHubDataError("GitHub repository data is invalid")
     try:
         updated_at = datetime.fromisoformat(payload["updated_at"])
     except ValueError:
@@ -211,6 +218,7 @@ def _snapshot_from_metadata(payload: object, collected_at: datetime) -> RepoSnap
         updated_at=updated_at,
         archived=payload["archived"],
         is_fork=payload["fork"],
+        is_mirror=mirror_url is not None,
         collected_at=collected_at,
     )
 

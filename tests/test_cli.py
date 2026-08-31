@@ -80,17 +80,64 @@ def test_run_sends_only_after_required_secrets_are_present(monkeypatch: pytest.M
     assert pipeline.last_options.force is True
 
 
-def test_send_secret_requirements_exclude_deepseek_for_off_mode() -> None:
-    """Would catch off-mode sending needlessly demanding a paid AI secret."""
+def test_send_secret_requirements_never_make_optional_ai_key_a_mail_prerequisite() -> None:
+    """Would catch full/economy sends aborting before deterministic AI fallback."""
     from ai_daily.cli import required_send_secret_names
 
-    assert required_send_secret_names("off") == (
+    expected = (
         "MS_CLIENT_ID",
         "MS_TOKEN_KEY",
         "OUTLOOK_SENDER",
         "MAIL_TO",
     )
-    assert required_send_secret_names("full")[0] == "DEEPSEEK_API_KEY"
+    assert required_send_secret_names("off") == expected
+    assert required_send_secret_names("economy") == expected
+    assert required_send_secret_names("full") == expected
+
+
+def test_full_send_without_deepseek_key_reaches_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Would catch a missing optional AI key blocking an otherwise configured delivery."""
+    from ai_daily.cli import main
+
+    pipeline = FakePipeline(FakeResult(sent=True, message_id="accepted-safe-id"))
+    monkeypatch.setattr("ai_daily.cli.build_pipeline", lambda: pipeline)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    for name in ("MS_CLIENT_ID", "MS_TOKEN_KEY", "OUTLOOK_SENDER", "MAIL_TO"):
+        monkeypatch.setenv(name, "configured")
+
+    assert main(["run", "--send", "--ai-mode", "full"]) == 0
+    assert pipeline.last_options.send is True
+    assert pipeline.last_options.ai_mode == "full"
+
+
+def test_lazy_paid_client_disables_sdk_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Would catch hidden SDK retries bypassing application attempt and usage accounting."""
+    from ai_daily.cli import _LazyEnricher
+    from ai_daily.config import AppSettings
+
+    captured: dict[str, object] = {}
+
+    def fake_openai(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "configured")
+    monkeypatch.setattr("ai_daily.cli.OpenAI", fake_openai)
+
+    news, repos, usage = _LazyEnricher(AppSettings()).enrich([], [], "full")
+
+    assert news == []
+    assert repos == []
+    assert usage == []
+    assert captured == {
+        "api_key": "configured",
+        "base_url": "https://api.deepseek.com",
+        "max_retries": 0,
+    }
 
 
 def test_validate_sources_threshold_writes_redacted_markdown_summary(

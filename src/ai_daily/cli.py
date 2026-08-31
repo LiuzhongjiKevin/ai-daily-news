@@ -63,7 +63,11 @@ class _LazyEnricher:
         key = os.environ.get("DEEPSEEK_API_KEY")
         if not key:
             raise AIEnrichmentError("AI configuration is unavailable")
-        client = OpenAI(api_key=key, base_url=str(self.settings.ai_base_url))
+        client = OpenAI(
+            api_key=key,
+            base_url=str(self.settings.ai_base_url),
+            max_retries=0,
+        )
         return AIEnricher(client, self.settings).enrich(news, repos, mode)  # type: ignore[arg-type]
 
 
@@ -109,7 +113,8 @@ def _load_sources(root: Path) -> list[SourceConfig]:
 
 def required_send_secret_names(mode: str) -> tuple[str, ...]:
     """Return names only, never secret values, for one explicit delivery request."""
-    return (("DEEPSEEK_API_KEY",) if mode != "off" else ()) + _SEND_SECRETS
+    del mode
+    return _SEND_SECRETS
 
 
 def _settings_mode() -> str:

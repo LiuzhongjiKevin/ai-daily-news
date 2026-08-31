@@ -2,8 +2,16 @@
 # discovery entries. Page selectors are source-shape contracts: a changed newsroom
 # layout is surfaced as a source warning rather than guessed links or an empty success.
 sources:
-  - {id: kimi, name: "Kimi / 月之暗面", kind: page, source_type: official, url: "https://www.moonshot.cn/", language: zh, category: model, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p", link_path_pattern: "^/(?:news|blog)/"}
-  - {id: glm, name: "GLM / 智谱", kind: page, source_type: official, url: "https://www.zhipuai.cn/", language: zh, category: model, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p", link_path_pattern: "^/(?:news|news-detail)/"}
+  # Verified first-party Kimi channels (2026-08-31): public blog, API platform log,
+  # and releases from the official MoonshotAI repository.
+  - {id: kimi-blog, name: "Kimi Blog", kind: page, source_type: official, url: "https://www.kimi.com/en/blog/", language: en, category: model, item_selector: "article", title_selector: "h1, h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p", link_path_pattern: "^/en/blog/"}
+  - {id: kimi-platform-blog, name: "Kimi Platform Blog", kind: page, source_type: official, url: "https://platform.kimi.com/blog", language: en, category: api, item_selector: "article", title_selector: "h1, h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p", link_path_pattern: "^/blog(?:/|$)"}
+  - {id: kimi-code-releases, name: "Kimi Code Releases", kind: github_releases, source_type: release, url: "https://github.com/MoonshotAI/kimi-code", language: en, category: open_source}
+  # Verified first-party GLM channels (2026-08-31): Z.ai research, product release
+  # notes, and releases from the official zai-org model repository.
+  - {id: glm-blog, name: "Z.ai Blog", kind: page, source_type: official, url: "https://z.ai/blog", language: en, category: research, item_selector: "article", title_selector: "h1, h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p", link_path_pattern: "^/blog(?:/|$)"}
+  - {id: glm-release-notes, name: "Z.ai Release Notes", kind: page, source_type: official, url: "https://docs.z.ai/release-notes/new-released", language: en, category: model, item_selector: "article", title_selector: "h1, h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p", link_path_pattern: "^/release-notes/"}
+  - {id: glm-5-releases, name: "GLM-5 Releases", kind: github_releases, source_type: release, url: "https://github.com/zai-org/GLM-5", language: en, category: open_source}
   - {id: deepseek, name: DeepSeek, kind: page, source_type: official, url: "https://www.deepseek.com/", language: zh, category: model, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p", link_path_pattern: "^/(?:news|updates)/"}
   - {id: qwen, name: "通义千问 / Qwen", kind: page, source_type: official, url: "https://qwenlm.github.io/blog/", language: zh, category: model, item_selector: "article", title_selector: "h1, h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p", link_path_pattern: "^/blog/"}
   - {id: doubao, name: "豆包", kind: page, source_type: official, url: "https://www.volcengine.com/product/doubao", language: zh, category: model, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p", link_path_pattern: "^/(?:news|product/doubao)/"}

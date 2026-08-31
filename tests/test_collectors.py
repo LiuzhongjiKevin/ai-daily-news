@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -35,6 +36,22 @@ class FixtureClient:
             request = httpx.Request("GET", url)
             raise httpx.HTTPStatusError("missing fixture", request=request, response=httpx.Response(404))
         return httpx.Response(200, content=self.responses[url], request=httpx.Request("GET", url))
+
+
+class RedirectingFixtureClient(FixtureClient):
+    """Fixture transport whose final response URL can differ from the configured source."""
+
+    def __init__(self, responses: dict[str, bytes], final_url: str) -> None:
+        super().__init__(responses)
+        self.final_url = final_url
+
+    def get(self, url: str, **kwargs: object) -> httpx.Response:
+        self.requests.append((url, kwargs))
+        return httpx.Response(
+            200,
+            content=self.responses[url],
+            request=httpx.Request("GET", self.final_url),
+        )
 
 
 @pytest.mark.parametrize(
@@ -252,6 +269,91 @@ def test_page_collector_rejects_incidental_cards_outside_the_source_news_path(
         PageCollector(http_client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
 
 
+def test_page_collector_rejects_cross_origin_links_even_when_the_path_matches(
+    http_client: FixtureClient,
+) -> None:
+    """Would catch a matching path on an attacker-controlled host entering the digest."""
+    source = SourceConfig(
+        id="newsroom",
+        name="Example Newsroom",
+        kind="page",
+        source_type="official",
+        url="https://example.test/news",
+        language="en",
+        category="company",
+        item_selector="article",
+        title_selector="h2",
+        link_selector="a",
+        date_selector="time",
+        link_path_pattern=r"^/releases/",
+    )
+    http_client.responses[str(source.url)] = (
+        b"<article><h2>Hostile card</h2>"
+        b"<a href='https://evil.test/releases/lookalike'>Read</a>"
+        b"<time datetime='2026-08-24T09:00:00Z'></time></article>"
+    )
+
+    with pytest.raises(PageParseError, match="matched 1 cards but parsed 0"):
+        PageCollector(http_client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
+
+
+def test_page_collector_accepts_an_explicit_exact_destination_host_allowlist(
+    http_client: FixtureClient,
+) -> None:
+    """Would catch an intentional first-party docs host being blocked by same-origin defaults."""
+    source = SourceConfig(
+        id="newsroom",
+        name="Example Newsroom",
+        kind="page",
+        source_type="official",
+        url="https://example.test/news",
+        language="en",
+        category="company",
+        item_selector="article",
+        title_selector="h2",
+        link_selector="a",
+        date_selector="time",
+        link_path_pattern=r"^/releases/",
+        allowed_link_hosts=["docs.example.test"],
+    )
+    http_client.responses[str(source.url)] = (
+        b"<article><h2>Docs card</h2>"
+        b"<a href='https://docs.example.test/releases/allowed'>Read</a>"
+        b"<time datetime='2026-08-24T09:00:00Z'></time></article>"
+    )
+
+    rows = PageCollector(http_client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
+
+    assert [str(row.canonical_url) for row in rows] == [
+        "https://docs.example.test/releases/allowed"
+    ]
+
+
+def test_page_collector_rejects_a_cross_origin_final_response() -> None:
+    """Would catch redirecting the configured page fetch to an untrusted origin."""
+    source = SourceConfig(
+        id="newsroom",
+        name="Example Newsroom",
+        kind="page",
+        source_type="official",
+        url="https://example.test/news",
+        language="en",
+        category="company",
+        item_selector="article.story",
+        title_selector="h2",
+        link_selector="a.read-more",
+        date_selector="time",
+        link_path_pattern=r"^/releases/",
+    )
+    client = RedirectingFixtureClient(
+        {str(source.url): (FIXTURES / "news_page.html").read_bytes()},
+        "https://evil.test/news",
+    )
+
+    with pytest.raises(PageParseError, match="final response origin is not allowed"):
+        PageCollector(client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
+
+
 def test_github_release_collector_maps_api_releases(http_client: FixtureClient) -> None:
     """Would catch releases being read from the wrong JSON fields or old releases being retained."""
     source = SourceConfig(
@@ -313,6 +415,70 @@ def test_discovery_collector_reports_non_json_transport_without_a_response_body(
 
     with pytest.raises(SourceParseError, match="invalid discovery JSON content-type=unknown"):
         DiscoveryCollector(http_client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {},
+        {"articles": {}},
+        {"articles": [None, "private-provider-value", {"title": "missing fields"}]},
+    ],
+    ids=["non-mapping", "missing-articles", "non-list-articles", "zero-valid-rows"],
+)
+def test_discovery_collector_fails_malformed_schemas_closed(
+    payload: object,
+) -> None:
+    """Would catch malformed discovery payloads being counted as empty successes."""
+    source = SourceConfig(
+        id="reuters-discovery",
+        name="Reuters AI",
+        kind="discovery",
+        source_type="discovery",
+        url="https://api.gdeltproject.org/api/v2/doc/doc",
+        language="en",
+        category="industry",
+        allowed_domains=["reuters.com"],
+    )
+    client = FixtureClient({str(source.url): json.dumps(payload).encode()})
+
+    with pytest.raises(SourceParseError, match="discovery response schema is invalid") as error:
+        DiscoveryCollector(client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
+
+    assert "private-provider-value" not in str(error.value)
+
+
+def test_discovery_collector_accepts_explicit_empty_and_partial_valid_article_lists() -> None:
+    """Would catch valid emptiness or a valid row being rejected with malformed siblings."""
+    source = SourceConfig(
+        id="reuters-discovery",
+        name="Reuters AI",
+        kind="discovery",
+        source_type="discovery",
+        url="https://api.gdeltproject.org/api/v2/doc/doc",
+        language="en",
+        category="industry",
+        allowed_domains=["reuters.com"],
+    )
+    client = FixtureClient({str(source.url): b'{"articles": []}'})
+    collector = DiscoveryCollector(client)
+    assert collector.collect(source, datetime(2026, 8, 23, tzinfo=UTC)) == []
+
+    client.responses[str(source.url)] = json.dumps(
+        {
+            "articles": [
+                None,
+                {
+                    "title": "Allowed AI report",
+                    "url": "https://www.reuters.com/technology/allowed-ai-report",
+                    "seendate": "20260824T110000Z",
+                },
+            ]
+        }
+    ).encode()
+    rows = collector.collect(source, datetime(2026, 8, 23, tzinfo=UTC))
+    assert [row.title for row in rows] == ["Allowed AI report"]
 
 
 def test_registry_isolates_one_source_failure_while_returning_other_source_items(
@@ -445,8 +611,12 @@ def test_configured_registry_covers_required_sources_with_unique_ids() -> None:
 
     sources = load_sources(Path("config/sources.yaml"))
     expected_ids = {
-        "kimi",
-        "glm",
+        "kimi-blog",
+        "kimi-platform-blog",
+        "kimi-code-releases",
+        "glm-blog",
+        "glm-release-notes",
+        "glm-5-releases",
         "deepseek",
         "qwen",
         "doubao",
@@ -503,3 +673,79 @@ def test_configured_registry_covers_required_sources_with_unique_ids() -> None:
     assert all(source.source_type and source.category for source in sources)
     page_sources = [source for source in sources if source.kind == "page"]
     assert all(source.link_path_pattern and source.link_path_pattern.startswith("^/") for source in page_sources)
+
+
+def test_kimi_and_glm_have_three_distinct_verified_first_party_channels() -> None:
+    """Would catch either family regressing to one fragile generic homepage."""
+    from urllib.parse import urlsplit
+
+    from ai_daily.collectors.base import load_sources
+
+    configured = {
+        source.id: source for source in load_sources(Path("config/sources.yaml"))
+    }
+    expected = {
+        "kimi-blog": (
+            "page",
+            "official",
+            "model",
+            "https://www.kimi.com/en/blog/",
+            "www.kimi.com",
+        ),
+        "kimi-platform-blog": (
+            "page",
+            "official",
+            "api",
+            "https://platform.kimi.com/blog",
+            "platform.kimi.com",
+        ),
+        "kimi-code-releases": (
+            "github_releases",
+            "release",
+            "open_source",
+            "https://github.com/MoonshotAI/kimi-code",
+            "github.com",
+        ),
+        "glm-blog": (
+            "page",
+            "official",
+            "research",
+            "https://z.ai/blog",
+            "z.ai",
+        ),
+        "glm-release-notes": (
+            "page",
+            "official",
+            "model",
+            "https://docs.z.ai/release-notes/new-released",
+            "docs.z.ai",
+        ),
+        "glm-5-releases": (
+            "github_releases",
+            "release",
+            "open_source",
+            "https://github.com/zai-org/GLM-5",
+            "github.com",
+        ),
+    }
+
+    for source_id, (kind, source_type, category, url, host) in expected.items():
+        source = configured[source_id]
+        assert (source.kind, source.source_type, source.category) == (
+            kind,
+            source_type,
+            category,
+        )
+        assert str(source.url) == url
+        assert urlsplit(str(source.url)).hostname == host
+
+    assert "kimi" not in configured
+    assert "glm" not in configured
+    assert {
+        urlsplit(str(configured[source_id].url)).hostname
+        for source_id in ("kimi-blog", "kimi-platform-blog", "kimi-code-releases")
+    } == {"www.kimi.com", "platform.kimi.com", "github.com"}
+    assert {
+        urlsplit(str(configured[source_id].url)).hostname
+        for source_id in ("glm-blog", "glm-release-notes", "glm-5-releases")
+    } == {"z.ai", "docs.z.ai", "github.com"}

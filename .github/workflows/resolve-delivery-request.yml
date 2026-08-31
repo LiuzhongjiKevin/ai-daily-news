@@ -1,0 +1,36 @@
+name: Resolve AI Daily Delivery Request
+run-name: ai-daily-resolve|date=${{ inputs.date }}|resolution=${{ inputs.resolution }}|message_id=${{ inputs.message_id }}|confirm=${{ inputs.confirm_owner_terminal }}|ref_type=${{ github.ref_type }}|ref=${{ github.ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: Beijing delivery date (YYYY-MM-DD)
+        type: string
+        required: true
+      resolution:
+        description: Mailbox-confirmed resolution
+        type: choice
+        options: [retry, sent]
+        required: true
+      message_id:
+        description: Safe local fingerprint (required only for sent)
+        type: string
+        required: false
+      confirm_owner_terminal:
+        description: I confirmed the owning delivery run is terminal
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  record_request:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Record read-only recovery request
+        run: echo "Resolution request recorded for trusted default-branch processing."

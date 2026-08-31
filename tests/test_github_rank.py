@@ -102,6 +102,15 @@ def test_discovery_unions_trending_search_and_history_case_insensitively() -> No
     }
 
 
+def test_github_api_headers_omit_empty_authorization_but_keep_nonempty_tokens() -> None:
+    """Would catch unauthenticated API calls emitting an invalid empty Bearer credential."""
+    assert github.github_headers("") == {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    assert github.github_headers("token")["Authorization"] == "Bearer token"
+
+
 def test_discovery_rejects_malformed_search_json_with_sanitized_typed_error() -> None:
     """Would catch malformed Search JSON bypassing cached fallback or leaking its response body."""
     client = GitHubFixtureClient()
@@ -179,6 +188,24 @@ def test_fetch_snapshots_isolates_malformed_repository_records_and_warns() -> No
     )
 
 
+def test_fetch_snapshots_preserves_githubs_explicit_mirror_marker_for_ranking() -> None:
+    """Would catch GitHub mirror metadata being discarded before eligibility filtering."""
+    client = GitHubFixtureClient()
+    client.repos.append(
+        {
+            **client.repos[0],
+            "full_name": "mirror/repo",
+            "mirror_url": "https://gitlab.com/source/project",
+        }
+    )
+
+    batch = fetch_repo_snapshots(client, "token", ["mirror/repo"], NOW)
+
+    assert len(batch) == 1
+    assert batch[0].repository == "mirror/repo"
+    assert batch[0].is_mirror is True
+
+
 @pytest.mark.parametrize("failure_kind", ["http_404", "transport", "response"])
 def test_fetch_snapshots_isolates_http_transport_and_json_failures(failure_kind: str) -> None:
     """Would catch one repository-level failure source breaking the rest of the bounded batch."""
@@ -242,6 +269,37 @@ def test_ranking_marks_missing_baseline_as_trial_and_limits_to_ten() -> None:
     assert [item.snapshot.repository for item in ranked] == [f"owner/{number:02}" for number in range(14, 4, -1)]
     assert all(item.is_trial for item in ranked)
     assert all(item.stars_gained == 0 for item in ranked)
+
+
+def test_ranking_excludes_only_explicit_mirrors_and_extreme_star_anomalies() -> None:
+    """Would catch obvious ranking manipulation or an over-broad viral-repository filter."""
+    normal = snap("owner/normal", 1_100_000)
+    near_limit = snap("owner/viral-but-plausible", 1_000_100)
+    explicit_mirror = snap("owner/mirror", 500)
+    explicit_mirror.is_mirror = True
+    described_mirror = snap("owner/described-mirror", 400)
+    described_mirror.description = "Read-only mirror of https://gitlab.com/source/project"
+    anomaly = snap("owner/anomaly", 1_000_101)
+    current = [normal, near_limit, explicit_mirror, described_mirror, anomaly]
+    baseline = [
+        snap("owner/normal", 1_000_000),
+        snap("owner/viral-but-plausible", 100),
+        snap("owner/mirror", 0),
+        snap("owner/described-mirror", 0),
+        snap("owner/anomaly", 0),
+    ]
+
+    ranked = rank_repositories(current, baseline)
+
+    assert [item.snapshot.repository for item in ranked] == [
+        "owner/viral-but-plausible",
+        "owner/normal",
+    ]
+    assert ranked.exclusion_counts == {"mirror": 2, "star_anomaly": 1}
+    assert ranked.warnings == (
+        "GitHub ranking excluded 2 obvious mirrors",
+        "GitHub ranking excluded 1 implausible seven-day star anomaly",
+    )
 
 
 def test_recent_snapshots_loads_exact_baseline_or_oldest_first_week_snapshot(tmp_path: Path) -> None:

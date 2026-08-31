@@ -718,6 +718,40 @@ def test_ai_enrichment_error_falls_back_but_preserves_paid_usage_and_cost(tmp_pa
     assert failing.calls == 1
 
 
+@pytest.mark.parametrize("send", [False, True], ids=["preview", "send"])
+@pytest.mark.parametrize("mode", ["full", "economy"])
+def test_missing_ai_key_uses_zero_call_deterministic_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    send: bool,
+    mode: str,
+) -> None:
+    """Would catch no-key preview/send losing content, attempting paid AI, or leaking details."""
+    from ai_daily.cli import _LazyEnricher
+    from ai_daily.pipeline import RunOptions
+
+    mailer = RecordingMailer()
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    result = make_pipeline(
+        tmp_path,
+        enricher=_LazyEnricher(AppSettings(ai_model="test-model")),
+        off_enricher=OffEnricher(),
+        mailer=mailer,
+    ).run(RunOptions(send=send, ai_mode=mode))
+
+    assert result.sent is send
+    assert mailer.calls == int(send)
+    assert result.effective_ai_mode == "off"
+    assert result.ai_call_count == 0
+    assert result.usage == []
+    assert result.estimated_cost == Decimal(0)
+    assert result.warnings == ["AI enrichment failed; deterministic fallback used"]
+    assert result.markdown_path is not None
+    rendered = result.markdown_path.read_text("utf-8")
+    assert "A model launch" in rendered
+    assert "AI configuration" not in rendered
+
+
 @pytest.mark.parametrize(
     ("github_usage", "expected_input_miss"),
     [
@@ -952,6 +986,26 @@ def test_partial_github_metadata_warning_reaches_digest_while_usable_rows_contin
     archive = result.markdown_path.read_text("utf-8") if result.markdown_path else ""
     assert "GitHub metadata partial: 1/2 repositories unavailable" in archive
     assert "data=1" in archive
+
+
+def test_github_ranking_exclusion_reasons_reach_the_digest_without_repository_names(
+    tmp_path: Path,
+) -> None:
+    """Would catch mirror/anomaly filtering happening silently at the pipeline boundary."""
+    from ai_daily.pipeline import RunOptions
+
+    mirror = snapshot().model_copy(
+        update={"repository": "untrusted-owner/secret-mirror", "is_mirror": True}
+    )
+    result = make_pipeline(
+        tmp_path,
+        fetch=lambda *_: github.GitHubSnapshotBatch([snapshot(), mirror]),
+    ).run(RunOptions())
+
+    assert result.warnings == ["GitHub ranking excluded 1 obvious mirror"]
+    archive = result.markdown_path.read_text("utf-8") if result.markdown_path else ""
+    assert "GitHub ranking excluded 1 obvious mirror" in archive
+    assert "untrusted-owner/secret-mirror" not in archive
 
 
 def test_all_bad_github_metadata_preserves_warning_and_uses_cache(tmp_path: Path) -> None:

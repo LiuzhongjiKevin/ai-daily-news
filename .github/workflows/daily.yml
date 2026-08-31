@@ -1,18 +1,9 @@
-name: AI Daily
+name: AI Daily Production
 
 on:
-  workflow_dispatch:
-    inputs:
-      mode:
-        type: choice
-        options: [full, economy, off]
-        default: full
-      send:
-        type: boolean
-        default: false
-      force:
-        type: boolean
-        default: false
+  workflow_run:
+    workflows: ["AI Daily Request"]
+    types: [completed]
   schedule:
     - cron: "47 6 * * *"
       timezone: "Asia/Shanghai"
@@ -20,46 +11,116 @@ on:
       timezone: "Asia/Shanghai"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ai-daily-delivery
   cancel-in-progress: false
 
 jobs:
-  daily:
-    if: >-
-      github.event_name != 'schedule' || vars.AI_DAILY_SCHEDULE_ENABLED == 'true'
+  authorize:
     runs-on: ubuntu-latest
-    env:
-      AI_DAILY_ATTEMPT_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
+    permissions:
+      contents: read
+    outputs:
+      trusted: ${{ steps.authority.outputs.trusted }}
+      mode: ${{ steps.request.outputs.mode }}
+      send: ${{ steps.request.outputs.send || 'false' }}
+      force: ${{ steps.request.outputs.force || 'false' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+      - name: Verify production authority
+        id: authority
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TRIGGER_EVENT: ${{ github.event.workflow_run.event }}
+          TRIGGER_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          TRIGGER_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          TRIGGER_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: python scripts/check_production_authority.py
+      - name: Parse trusted daily request
+        id: request
+        if: >-
+          steps.authority.outputs.trusted == 'true' &&
+          github.event_name == 'workflow_run'
+        env:
+          REQUEST_TITLE: ${{ github.event.workflow_run.display_title }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python scripts/parse_trusted_request.py daily
+
+  cost_preview:
+    needs: authorize
+    if: >-
+      needs.authorize.outputs.trusted == 'true' &&
+      github.event_name == 'workflow_run' &&
+      needs.authorize.outputs.send != 'true' &&
+      needs.authorize.outputs.mode != 'off'
+    runs-on: ubuntu-latest
+    environment: ai-daily-production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
       - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.12"
           cache: pip
-      - name: Verify centralized delivery ref
-        id: delivery_ref
+      - run: python -m pip install --requirement requirements-prod.lock
+      - run: python -m pip install --no-deps --no-build-isolation -e .
+      - name: Run trusted cost preview
         env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: python scripts/check_delivery_ref.py
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ai-daily preview --ai-mode "${{ needs.authorize.outputs.mode }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: ai-daily-cost-preview
+          path: preview/
+          if-no-files-found: warn
+
+  daily:
+    needs: authorize
+    if: >-
+      needs.authorize.outputs.trusted == 'true' &&
+      ((github.event_name == 'schedule' && vars.AI_DAILY_SCHEDULE_ENABLED == 'true') ||
+      (github.event_name == 'workflow_run' && needs.authorize.outputs.send == 'true'))
+    runs-on: ubuntu-latest
+    environment: ai-daily-production
+    permissions:
+      contents: write
+    env:
+      AI_DAILY_ATTEMPT_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+          cache: pip
       - run: python -m pip install --requirement requirements-prod.lock
       - run: python -m pip install --no-deps --no-build-isolation -e .
       - name: Reserve delivery intent
         id: reserve
-        if: >-
-          steps.delivery_ref.outputs.trusted == 'true' &&
-          (github.event_name != 'workflow_dispatch' || inputs.send == true)
+        if: needs.authorize.outputs.trusted == 'true'
         run: |
           force_arg=""
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
+          if [ "${{ needs.authorize.outputs.force }}" = "true" ]; then
             force_arg="--force"
           fi
           ai-daily reserve-delivery --attempt-id "${AI_DAILY_ATTEMPT_ID}" ${force_arg}
       - name: Commit reserved intent
         if: >-
-          steps.delivery_ref.outputs.trusted == 'true' &&
+          needs.authorize.outputs.trusted == 'true' &&
           steps.reserve.outputs.reservation_status == 'reserved'
         run: |
           git config user.name "github-actions[bot]"
@@ -79,10 +140,9 @@ jobs:
       - name: Run daily digest
         id: digest
         if: >-
-          (github.event_name == 'workflow_dispatch' && inputs.send != true) ||
-          (steps.delivery_ref.outputs.trusted == 'true' &&
+          needs.authorize.outputs.trusted == 'true' &&
           (steps.reserve.outputs.reservation_status == 'reserved' ||
-          steps.reserve.outputs.reservation_status == 'already_sent'))
+          steps.reserve.outputs.reservation_status == 'already_sent')
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
@@ -91,20 +151,20 @@ jobs:
           MAIL_TO: ${{ secrets.MAIL_TO }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ "${{ inputs.send }}" = "true" ]; then
-              ai-daily run --send --attempt-id "${AI_DAILY_ATTEMPT_ID}" --ai-mode "${{ inputs.mode }}" ${{ inputs.force && '--force' || '' }}
-            else
-              ai-daily preview --ai-mode "${{ inputs.mode }}" ${{ inputs.force && '--force' || '' }}
-            fi
-          else
-            ai-daily run --send --attempt-id "${AI_DAILY_ATTEMPT_ID}"
+          force_arg=""
+          mode_arg=""
+          if [ "${{ needs.authorize.outputs.force }}" = "true" ]; then
+            force_arg="--force"
           fi
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            mode_arg="--ai-mode ${{ needs.authorize.outputs.mode }}"
+          fi
+          ai-daily run --send --attempt-id "${AI_DAILY_ATTEMPT_ID}" ${mode_arg} ${force_arg}
       - name: Release unattempted intent
         id: cleanup
         if: >-
           always() &&
-          steps.delivery_ref.outputs.trusted == 'true' &&
+          needs.authorize.outputs.trusted == 'true' &&
           steps.reserve.outputs.reservation_status == 'reserved' &&
           steps.digest.outcome == 'failure' &&
           steps.digest.outputs.delivery_outcome == 'not_attempted'
@@ -112,7 +172,7 @@ jobs:
       - name: Commit unattempted cleanup
         if: >-
           always() &&
-          steps.delivery_ref.outputs.trusted == 'true' &&
+          needs.authorize.outputs.trusted == 'true' &&
           steps.cleanup.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
@@ -132,7 +192,7 @@ jobs:
       - name: Commit accepted state
         if: >-
           always() &&
-          steps.delivery_ref.outputs.trusted == 'true' &&
+          needs.authorize.outputs.trusted == 'true' &&
           steps.digest.outcome == 'success' &&
           steps.digest.outputs.delivery_outcome == 'accepted'
         run: |
@@ -153,6 +213,6 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: ai-daily-preview
+          name: ai-daily-delivery-preview
           path: preview/
           if-no-files-found: warn

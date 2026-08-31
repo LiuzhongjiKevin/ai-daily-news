@@ -8,7 +8,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 import yaml
 from dateutil import parser
-from pydantic import BaseModel, Field, HttpUrl, ValidationError, model_validator
+from pydantic import BaseModel, Field, HttpUrl, ValidationError, field_validator, model_validator
 
 from ai_daily.models import RawItem
 
@@ -45,6 +45,27 @@ class SourceConfig(BaseModel):
     excerpt_selector: str | None = None
     link_path_pattern: str | None = None
     allowed_domains: list[str] = Field(default_factory=list)
+    allowed_link_hosts: list[str] = Field(default_factory=list)
+
+    @field_validator("allowed_link_hosts")
+    @classmethod
+    def validate_allowed_link_hosts(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            host = value.strip().rstrip(".").casefold()
+            if (
+                not host
+                or "://" in host
+                or "/" in host
+                or "@" in host
+                or ":" in host
+                or any(not label or label.startswith("-") or label.endswith("-") for label in host.split("."))
+                or any(not character.isalnum() and character != "-" for character in host.replace(".", ""))
+            ):
+                raise ValueError("allowed_link_hosts entries must be exact hostnames")
+            if host not in normalized:
+                normalized.append(host)
+        return normalized
 
     @model_validator(mode="after")
     def require_page_contract(self) -> "SourceConfig":

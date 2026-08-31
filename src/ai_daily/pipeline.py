@@ -248,10 +248,14 @@ class DailyPipeline:
         )
         if not ranked:
             raise GitHubCollectionError(
-                "GitHub ranking is unavailable", warnings=metadata_warnings
+                "GitHub ranking is unavailable",
+                warnings=[*metadata_warnings, *ranked.warnings],
             )
         self.state_store.save_snapshot(day, current_snapshots)
-        return GitHubRankingBatch(ranked, warnings=metadata_warnings)
+        return GitHubRankingBatch(
+            ranked,
+            warnings=[*metadata_warnings, *ranked.warnings],
+        )
 
     def write_outputs(
         self,
@@ -321,7 +325,10 @@ class DailyPipeline:
                 result.github_data_date = local_date
             except GitHubCollectionError as error:
                 warnings.extend(error.warnings)
-                ranked_repos, cached_day = self._load_cached_rankings(local_now.date())
+                ranked_repos, cached_day, ranking_warnings = self._load_cached_rankings(
+                    local_now.date()
+                )
+                warnings.extend(ranking_warnings)
                 if cached_day is None:
                     warnings.append("GitHub data unavailable; no cached snapshot used")
                     result.github_status = "unavailable"
@@ -465,7 +472,10 @@ class DailyPipeline:
             snapshots.extend(self.state_store.load_snapshot(snapshot_day))
         return snapshots
 
-    def _load_cached_rankings(self, today: date) -> tuple[list[RankedRepo], date | None]:
+    def _load_cached_rankings(
+        self, today: date
+    ) -> tuple[list[RankedRepo], date | None, list[str]]:
+        exclusion_warnings: list[str] = []
         for snapshot_day in self.state_store.recent_snapshot_days(
             today,
             limit=self.settings.snapshot_retention_days,
@@ -486,9 +496,10 @@ class DailyPipeline:
                     has_full_baseline=bool(baseline),
                     fallback=self._retained_snapshots(snapshot_day),
                 )
+                exclusion_warnings.extend(ranked.warnings)
                 if ranked:
-                    return ranked, snapshot_day
-        return [], None
+                    return ranked, snapshot_day, exclusion_warnings
+        return [], None, exclusion_warnings
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:

@@ -41,36 +41,52 @@ class DiscoveryCollector:
         except ValueError as exc:
             content_type = response.headers.get("content-type", "unknown").split(";", 1)[0]
             raise SourceParseError(f"invalid discovery JSON content-type={content_type}") from exc
-        articles = payload.get("articles", []) if isinstance(payload, dict) else []
+        if not isinstance(payload, dict) or "articles" not in payload:
+            raise SourceParseError("discovery response schema is invalid")
+        articles = payload["articles"]
+        if not isinstance(articles, list):
+            raise SourceParseError("discovery response schema is invalid")
         cutoff = require_since_aware(since)
         rows: list[RawItem] = []
+        valid_rows = 0
         for article in articles:
             if not isinstance(article, dict):
                 continue
             url = article.get("url")
-            title = (article.get("title") or "").strip()
+            title_value = article.get("title")
             timestamp = article.get("seendate") or article.get("published_at")
-            if not url or not title or not timestamp or not self._is_allowed(url, source.allowed_domains):
+            if (
+                not isinstance(url, str)
+                or not isinstance(title_value, str)
+                or not title_value.strip()
+                or not isinstance(timestamp, (str, datetime))
+                or not self._is_allowed(url, source.allowed_domains)
+            ):
                 continue
             try:
                 published = parse_datetime(timestamp)
-            except (TypeError, ValueError):
-                continue
-            if published < cutoff:
-                continue
-            rows.append(
-                RawItem(
+                description = article.get("description") or article.get("snippet") or ""
+                if not isinstance(description, str):
+                    description = ""
+                row = RawItem(
                     source_id=source.id,
                     source_name=source.name,
                     source_type=source.source_type,
-                    title=title,
+                    title=title_value.strip(),
                     published_at=published,
                     canonical_url=url,
-                    excerpt=(article.get("description") or article.get("snippet") or "").strip(),
+                    excerpt=description.strip(),
                     language=source.language,
                     category=source.category,
                 )
-            )
+            except (TypeError, ValueError):
+                continue
+            valid_rows += 1
+            if published < cutoff:
+                continue
+            rows.append(row)
+        if articles and valid_rows == 0:
+            raise SourceParseError("discovery response schema is invalid")
         return rows
 
     @staticmethod

@@ -15,6 +15,30 @@ from ai_daily.http import RetryingClient
 from ai_daily.models import RawItem
 
 
+def _origin(url: str) -> tuple[str, str, int] | None:
+    parsed = urlparse(url)
+    scheme = parsed.scheme.casefold()
+    host = parsed.hostname.casefold() if parsed.hostname else ""
+    if scheme not in {"http", "https"} or not host or parsed.username or parsed.password:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    return scheme, host, port or (443 if scheme == "https" else 80)
+
+
+def _allowed_destination(source: SourceConfig, url: str) -> bool:
+    source_origin = _origin(str(source.url))
+    destination_origin = _origin(url)
+    if source_origin is None or destination_origin is None:
+        return False
+    if destination_origin == source_origin:
+        return True
+    scheme, host, port = destination_origin
+    return scheme == "https" and port == 443 and host in source.allowed_link_hosts
+
+
 class PageCollector:
     def __init__(self, client: RetryingClient) -> None:
         self.client = client
@@ -35,6 +59,8 @@ class PageCollector:
         except re.error as exc:
             raise ValueError("page source link_path_pattern is invalid") from exc
         response = self.client.get(str(source.url))
+        if _origin(str(response.url)) != _origin(str(source.url)):
+            raise PageParseError("page final response origin is not allowed")
         document = BeautifulSoup(response.content, "html.parser")
         cutoff = require_since_aware(since)
         cards = document.select(source.item_selector)
@@ -63,6 +89,8 @@ class PageCollector:
         if not href or not timestamp:
             return None
         canonical_url = urljoin(str(source.url), href)
+        if not _allowed_destination(source, canonical_url):
+            return None
         if not link_path_pattern.search(urlparse(canonical_url).path):
             return None
         try:

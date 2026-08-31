@@ -45,6 +45,7 @@ class RepoSnapshot(BaseModel):
     updated_at: datetime
     archived: bool = False
     is_fork: bool = False
+    is_mirror: bool = False
     collected_at: datetime
 
 

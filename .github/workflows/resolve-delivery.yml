@@ -1,68 +1,81 @@
 name: Resolve AI Daily Delivery
 
 on:
-  workflow_dispatch:
-    inputs:
-      date:
-        description: Beijing delivery date (YYYY-MM-DD)
-        type: string
-        required: true
-      resolution:
-        description: Mailbox-confirmed resolution
-        type: choice
-        options: [retry, sent]
-        required: true
-      message_id:
-        description: Safe local fingerprint (required only for sent)
-        type: string
-        required: false
-      confirm_owner_terminal:
-        description: I confirmed the owning delivery run is terminal
-        type: boolean
-        required: true
-        default: false
+  workflow_run:
+    workflows: ["Resolve AI Daily Delivery Request"]
+    types: [completed]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ai-daily-delivery
   cancel-in-progress: false
 
 jobs:
-  resolve:
+  authorize:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      trusted: ${{ steps.authority.outputs.trusted }}
+      date: ${{ steps.request.outputs.date }}
+      resolution: ${{ steps.request.outputs.resolution }}
+      message_id: ${{ steps.request.outputs.message_id }}
+      confirm: ${{ steps.request.outputs.confirm }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+      - name: Verify production authority
+        id: authority
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TRIGGER_EVENT: ${{ github.event.workflow_run.event }}
+          TRIGGER_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          TRIGGER_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          TRIGGER_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          TRIGGER_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: python scripts/check_production_authority.py
+      - name: Parse trusted resolution request
+        id: request
+        if: steps.authority.outputs.trusted == 'true'
+        env:
+          REQUEST_TITLE: ${{ github.event.workflow_run.display_title }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python scripts/parse_trusted_request.py resolve
+
+  resolve:
+    needs: authorize
+    if: >-
+      needs.authorize.outputs.trusted == 'true' &&
+      needs.authorize.outputs.confirm == 'true'
+    runs-on: ubuntu-latest
+    environment: ai-daily-production
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
       - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: "3.12"
           cache: pip
-      - name: Verify centralized delivery ref
-        id: delivery_ref
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: python scripts/check_delivery_ref.py
-      - name: Require trusted recovery context
-        env:
-          TRUSTED_REF: ${{ steps.delivery_ref.outputs.trusted }}
-          OWNER_TERMINAL_CONFIRMED: ${{ inputs.confirm_owner_terminal }}
-        run: |
-          if [ "${TRUSTED_REF}" != "true" ] || [ "${OWNER_TERMINAL_CONFIRMED}" != "true" ]; then
-            echo "Recovery requires the exact default branch and a terminal owner run." >&2
-            exit 1
-          fi
       - run: python -m pip install --requirement requirements-prod.lock
       - run: python -m pip install --no-deps --no-build-isolation -e .
       - name: Resolve delivery state
         id: resolution
         if: >-
-          steps.delivery_ref.outputs.trusted == 'true' &&
-          inputs.confirm_owner_terminal == true
+          needs.authorize.outputs.trusted == 'true' &&
+          needs.authorize.outputs.confirm == 'true'
         env:
-          DELIVERY_DATE: ${{ inputs.date }}
-          RESOLUTION: ${{ inputs.resolution }}
-          MESSAGE_ID: ${{ inputs.message_id }}
+          DELIVERY_DATE: ${{ needs.authorize.outputs.date }}
+          RESOLUTION: ${{ needs.authorize.outputs.resolution }}
+          MESSAGE_ID: ${{ needs.authorize.outputs.message_id }}
         run: |
           case "${RESOLUTION:-}" in
             retry)
@@ -86,8 +99,8 @@ jobs:
           esac
       - name: Commit resolved state
         if: >-
-          steps.delivery_ref.outputs.trusted == 'true' &&
-          inputs.confirm_owner_terminal == true &&
+          needs.authorize.outputs.trusted == 'true' &&
+          needs.authorize.outputs.confirm == 'true' &&
           steps.resolution.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
