@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 from ai_daily.collectors.base import (
@@ -23,7 +23,8 @@ class DiscoveryCollector:
         if not source.allowed_domains:
             raise ValueError("discovery sources require an explicit domain allowlist")
         end = self.now().astimezone(UTC)
-        start = end - timedelta(hours=36)
+        cutoff = require_since_aware(since)
+        start = min(cutoff, end)
         domain_query = " OR ".join(f"domain:{domain}" for domain in source.allowed_domains)
         response = self.client.get(
             str(source.url),
@@ -46,7 +47,6 @@ class DiscoveryCollector:
         articles = payload["articles"]
         if not isinstance(articles, list):
             raise SourceParseError("discovery response schema is invalid")
-        cutoff = require_since_aware(since)
         rows: list[RawItem] = []
         valid_rows = 0
         for article in articles:

@@ -1,5 +1,5 @@
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -395,6 +395,30 @@ def test_discovery_collector_filters_every_result_not_in_the_domain_allowlist(
     assert str(items[0].canonical_url) == "https://www.reuters.com/technology/allowed-ai-report"
     assert items[0].source_name == "Reuters AI"
     assert http_client.requests[-1][1]["params"]["format"] == "json"  # type: ignore[index]
+
+
+def test_discovery_collector_passes_the_requested_validation_horizon(
+    http_client: FixtureClient,
+) -> None:
+    """Would catch a 90-day source check silently querying only the daily 36-hour window."""
+    source = SourceConfig(
+        id="reuters-discovery",
+        name="Reuters AI",
+        kind="discovery",
+        source_type="discovery",
+        url="https://api.gdeltproject.org/api/v2/doc/doc",
+        language="en",
+        category="industry",
+        allowed_domains=["reuters.com"],
+    )
+    now = datetime(2026, 8, 24, 12, tzinfo=UTC)
+    since = now - timedelta(days=90)
+
+    DiscoveryCollector(http_client, now=lambda: now).collect(source, since)
+
+    params = http_client.requests[-1][1]["params"]
+    assert params["startdatetime"] == since.strftime("%Y%m%d%H%M%S")  # type: ignore[index]
+    assert params["enddatetime"] == now.strftime("%Y%m%d%H%M%S")  # type: ignore[index]
 
 
 def test_discovery_collector_reports_non_json_transport_without_a_response_body(

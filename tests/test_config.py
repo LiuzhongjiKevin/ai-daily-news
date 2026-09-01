@@ -1,6 +1,14 @@
 from pathlib import Path
 
-from ai_daily.config import load_prices, load_settings
+from ai_daily.config import AppSettings, load_prices, load_settings
+
+
+def test_first_delivery_defaults_to_deterministic_off_mode() -> None:
+    """Would catch a fresh checkout requiring or paying for AI before explicit enablement."""
+    root = Path(__file__).parents[1]
+
+    assert AppSettings().ai_mode == "off"
+    assert load_settings(root).ai_mode == "off"
 
 
 def test_loads_required_defaults(tmp_path: Path) -> None:

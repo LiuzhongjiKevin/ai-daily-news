@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, HttpUrl
 
 class AppSettings(BaseModel):
     timezone: str = "Asia/Shanghai"
-    ai_mode: Literal["full", "economy", "off"] = "full"
+    ai_mode: Literal["full", "economy", "off"] = "off"
     ai_base_url: HttpUrl = "https://api.deepseek.com"
     ai_model: str = "deepseek-v4-flash"
     ai_max_output_tokens: int = Field(default=2500, ge=256, le=8192)

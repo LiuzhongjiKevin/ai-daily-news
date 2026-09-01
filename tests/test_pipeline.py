@@ -953,6 +953,101 @@ def test_github_transport_failure_uses_newest_cached_snapshot_and_exposes_date(t
     assert result.github_data_date == "2026-08-23"
 
 
+def test_current_github_survives_a_corrupt_historical_snapshot_with_safe_warning(
+    tmp_path: Path,
+) -> None:
+    """Would catch one unreadable retained snapshot aborting otherwise current GitHub data."""
+    from ai_daily.pipeline import RunOptions
+
+    store = StateStore(tmp_path / "data")
+    store.snapshot_dir.mkdir(parents=True)
+    secret = "private-history-content"
+    (store.snapshot_dir / "2026-08-23.json").write_text(secret, encoding="utf-8")
+
+    result = make_pipeline(tmp_path, store=store).run(RunOptions(ai_mode="off"))
+
+    assert result.github_status == "current"
+    assert result.warnings == [
+        "GitHub history snapshot 2026-08-23 was invalid and skipped"
+    ]
+    assert secret not in " ".join(result.warnings)
+    assert str(tmp_path) not in " ".join(result.warnings)
+    assert (store.snapshot_dir / "2026-08-24.json").exists()
+
+
+def test_github_failure_skips_corrupt_newest_history_and_uses_valid_fallback(
+    tmp_path: Path,
+) -> None:
+    """Would catch a corrupt newest cache hiding a valid older fallback or duplicating warnings."""
+    from ai_daily.pipeline import RunOptions
+
+    store = StateStore(tmp_path / "data")
+    store.save_snapshot(date(2026, 8, 22), [snapshot()])
+    (store.snapshot_dir / "2026-08-23.json").write_text("not-json", encoding="utf-8")
+
+    def unavailable(*_: object) -> list[str]:
+        raise httpx.ConnectError("offline")
+
+    result = make_pipeline(tmp_path, store=store, discover=unavailable).run(
+        RunOptions(ai_mode="off")
+    )
+
+    assert result.github_status == "cached"
+    assert result.github_data_date == "2026-08-22"
+    assert result.warnings == [
+        "GitHub history snapshot 2026-08-23 was invalid and skipped",
+        "GitHub data unavailable; using cached snapshot from 2026-08-22",
+    ]
+
+
+def test_all_corrupt_github_history_degrades_to_a_news_only_digest(tmp_path: Path) -> None:
+    """Would catch unusable retained GitHub files blocking an otherwise valid news digest."""
+    from ai_daily.pipeline import RunOptions
+
+    store = StateStore(tmp_path / "data")
+    store.snapshot_dir.mkdir(parents=True)
+    secret = "corrupt-private-snapshot"
+    (store.snapshot_dir / "2026-08-23.json").write_text(secret, encoding="utf-8")
+
+    def unavailable(*_: object) -> list[str]:
+        raise httpx.ConnectError("offline")
+
+    result = make_pipeline(tmp_path, store=store, discover=unavailable).run(
+        RunOptions(ai_mode="off")
+    )
+
+    assert result.github_status == "unavailable"
+    assert result.repository_count == 0
+    assert result.final_news_count == 1
+    assert result.warnings == [
+        "GitHub history snapshot 2026-08-23 was invalid and skipped",
+        "GitHub data unavailable; no cached snapshot used",
+    ]
+    archive = result.markdown_path.read_text("utf-8") if result.markdown_path else ""
+    assert "A model launch" in archive
+    assert secret not in archive
+
+
+def test_mixed_valid_and_corrupt_history_keeps_valid_trial_baseline(tmp_path: Path) -> None:
+    """Would catch corrupt retention causing valid older star history to be discarded."""
+    from ai_daily.pipeline import RunOptions
+
+    store = StateStore(tmp_path / "data")
+    store.save_snapshot(
+        date(2026, 8, 20), [snapshot().model_copy(update={"stars": 10})]
+    )
+    (store.snapshot_dir / "2026-08-22.json").write_text("broken", encoding="utf-8")
+
+    result = make_pipeline(tmp_path, store=store).run(RunOptions(ai_mode="off"))
+
+    assert result.github_status == "current"
+    assert result.warnings == [
+        "GitHub history snapshot 2026-08-22 was invalid and skipped"
+    ]
+    archive = result.markdown_path.read_text("utf-8") if result.markdown_path else ""
+    assert "7 日新增：+90" in archive
+
+
 def test_malformed_github_search_data_uses_cached_snapshot(tmp_path: Path) -> None:
     """Would catch typed Search data failures escaping instead of using the existing cache path."""
     from ai_daily.pipeline import RunOptions

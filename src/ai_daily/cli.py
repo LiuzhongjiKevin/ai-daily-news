@@ -32,6 +32,7 @@ from ai_daily.pipeline import (
 from ai_daily.state import DeliveryStateError, StateStore
 
 AI_MODES = ("full", "economy", "off")
+HEALTHY_EMPTY = "healthy_empty"
 _SEND_SECRETS = ("MS_CLIENT_ID", "MS_TOKEN_KEY", "OUTLOOK_SENDER", "MAIL_TO")
 _SUMMARY_SECRET_NAMES = (
     "DEEPSEEK_API_KEY",
@@ -242,14 +243,17 @@ def _delivery_store() -> StateStore:
     return StateStore(project_root() / "data")
 
 
-def validate_collected_items(source: SourceConfig, items: list[object]) -> None:
-    """Treat empty parsers as failures where that would mask a broken source adapter."""
-    from ai_daily.collectors.base import PageParseError, SourceParseError
+def validate_collected_items(
+    source: SourceConfig, items: list[object]
+) -> Literal["success", "healthy_empty"]:
+    """Classify a schema-valid result without treating quiet sources as broken."""
+    from ai_daily.collectors.base import PageParseError
 
     if source.kind == "page" and not items:
         raise PageParseError("page returned zero valid cards")
     if source.kind in {"discovery", "github_releases"} and not items:
-        raise SourceParseError(f"{source.kind} returned zero valid items")
+        return "healthy_empty"
+    return "success"
 
 
 def validate_sources() -> list[tuple[str, str | None]]:
@@ -262,36 +266,59 @@ def validate_sources() -> list[tuple[str, str | None]]:
     for source in _load_sources(root):
         try:
             items = registry.collectors[source.kind].collect(source, since)
-            validate_collected_items(source, items)
+            status = validate_collected_items(source, items)
         except Exception as error:  # noqa: BLE001 - the report intentionally includes every source
             outcomes.append((source.id, format_source_failure(source, error)))
         else:
-            outcomes.append((source.id, None))
+            outcomes.append((source.id, HEALTHY_EMPTY if status == HEALTHY_EMPTY else None))
     return outcomes
+
+
+def _source_validation_counts(
+    outcomes: list[tuple[str, str | None]],
+) -> tuple[int, int, int, float]:
+    successes = sum(result is None for _, result in outcomes)
+    healthy_empty = sum(result == HEALTHY_EMPTY for _, result in outcomes)
+    failures = len(outcomes) - successes - healthy_empty
+    accepted = successes + healthy_empty
+    percent = (100 * accepted / len(outcomes)) if outcomes else 0
+    return successes, healthy_empty, failures, percent
 
 
 def _write_source_summary(outcomes: list[tuple[str, str | None]], threshold: int) -> None:
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
         return
-    successes = sum(failure is None for _, failure in outcomes)
-    percent = (100 * successes / len(outcomes)) if outcomes else 0
+    successes, healthy_empty, failures, percent = _source_validation_counts(outcomes)
+    accepted = successes + healthy_empty
+    threshold_status = "PASS" if percent >= threshold else "FAIL"
     lines = [
         "## AI Daily source validation",
         "",
-        f"- Successful enabled sources: {successes}/{len(outcomes)} ({percent:.1f}%)",
-        f"- Required minimum: {threshold}%",
+        f"- Accepted source health: {accepted}/{len(outcomes)} ({percent:.1f}%)",
+        f"- Successful: {successes}",
+        f"- Healthy empty: {healthy_empty}",
+        f"- Failed: {failures}",
+        f"- Threshold: {threshold_status} ({threshold}% required)",
         "",
         "| Source | Result |",
         "| --- | --- |",
     ]
     lines.extend(
         f"| `{_sanitize_summary_warning(source)}` | "
-        f"{'OK' if failure is None else 'FAILED: ' + _sanitize_summary_warning(failure)} |"
-        for source, failure in outcomes
+        f"{_source_validation_label(result)} |"
+        for source, result in outcomes
     )
     with Path(summary_path).open("a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
+
+
+def _source_validation_label(result: str | None) -> str:
+    if result is None:
+        return "OK"
+    if result == HEALTHY_EMPTY:
+        return "HEALTHY_EMPTY: valid response, no items in the 90-day validation window"
+    return "FAILED: " + _sanitize_summary_warning(result)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -380,14 +407,14 @@ def _validate_command(args: argparse.Namespace) -> int:
     except (ConfigurationError, OSError):
         print("Source validation could not run.", file=sys.stderr)
         return 1
-    successes = sum(failure is None for _, failure in outcomes)
-    percent = (100 * successes / len(outcomes)) if outcomes else 0
+    successes, healthy_empty, _, percent = _source_validation_counts(outcomes)
+    accepted = successes + healthy_empty
     failed = [
         _sanitize_summary_warning(source)
-        for source, failure in outcomes
-        if failure is not None
+        for source, result in outcomes
+        if result not in {None, HEALTHY_EMPTY}
     ]
-    print(f"Source validation: {successes}/{len(outcomes)} ({percent:.1f}%).")
+    print(f"Source validation: {accepted}/{len(outcomes)} ({percent:.1f}%).")
     if failed:
         print("Failed sources: " + ", ".join(failed) + ".")
     return 0 if percent >= args.minimum_success else 1

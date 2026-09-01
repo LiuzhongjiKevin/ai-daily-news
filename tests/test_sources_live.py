@@ -3,22 +3,14 @@ from pathlib import Path
 
 import pytest
 
+from ai_daily.cli import validate_collected_items
 from ai_daily.collectors import build_collector_registry, load_sources
 from ai_daily.collectors.base import (
     PageParseError,
     SourceConfig,
-    SourceParseError,
     format_source_failure,
 )
 from ai_daily.http import RetryingClient
-
-
-def validate_collected_items(source: SourceConfig, items: list[object]) -> None:
-    """Only a syntactically valid feed may be empty during live source validation."""
-    if source.kind == "page" and not items:
-        raise PageParseError("page returned zero valid cards")
-    if source.kind in {"discovery", "github_releases"} and not items:
-        raise SourceParseError(f"{source.kind} returned zero valid items")
 
 
 def test_live_validation_rejects_an_empty_page_result() -> None:
@@ -43,8 +35,8 @@ def test_live_validation_rejects_an_empty_page_result() -> None:
 
 
 @pytest.mark.parametrize("kind", ["discovery", "github_releases"])
-def test_live_validation_rejects_empty_non_feed_results(kind: str) -> None:
-    """Would catch an empty discovery or releases response being counted as validated."""
+def test_live_validation_marks_valid_empty_discovery_and_releases_healthy(kind: str) -> None:
+    """Would catch quiet discovery or releases periods consuming the failure threshold."""
     source = SourceConfig(
         id=f"empty-{kind}",
         name="Empty source",
@@ -58,8 +50,7 @@ def test_live_validation_rejects_empty_non_feed_results(kind: str) -> None:
         allowed_domains=["example.test"] if kind == "discovery" else [],
     )
 
-    with pytest.raises(SourceParseError, match="zero valid items"):
-        validate_collected_items(source, [])
+    assert validate_collected_items(source, []) == "healthy_empty"
 
 
 @pytest.mark.live

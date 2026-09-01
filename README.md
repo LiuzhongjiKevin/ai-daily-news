@@ -1,6 +1,6 @@
 # AI 新闻日报
 
-这是一个面向个人 Outlook 账户的私有仓库自动化：采集已配置的 AI 新闻与 GitHub 热门项目，生成中文日报，并可通过 Microsoft Graph 提交邮件。默认不应把它当成“已交付确认”：本地记录的消息 ID **仅表示 Microsoft Graph 已接受/排队**，不能证明收件箱已经送达。
+这是一个面向个人 Outlook 账户的私有仓库自动化：采集已配置的 AI 新闻与 GitHub 热门项目，生成中文日报，并可通过 Microsoft Graph 提交邮件。当前首次交付固定以确定性的 `off` 模式上线，不调用 DeepSeek、没有模型费用，也不要求配置 `DEEPSEEK_API_KEY`；AI 实现保留但暂不启用。默认不应把它当成“已交付确认”：本地记录的消息 ID **仅表示 Microsoft Graph 已接受/排队**，不能证明收件箱已经送达。
 
 ## 上线前准备
 
@@ -8,8 +8,8 @@
 2. 在 **Settings → Environments** 创建 `ai-daily-production`。在它的 **Deployment branches and tags** 中只允许受保护的默认分支：优先选择 “Selected branches and tags” 并只加入精确的 `main` 分支，不加入 tag 或通配分支；同时启用所需审批/保护规则。生产任务还会校验事件类型、仓库、完整默认分支 ref、branch 类型、大小写和触发 SHA，但 Environment 分支策略仍是必须的第二道边界。
 3. 在 Microsoft Entra 管理中心注册“仅个人 Microsoft 账户”可用的应用，记录应用（客户端）ID，并为委托权限添加 `Mail.Send`。在“身份验证”中**允许公共客户端流**，以启用设备代码登录。只给个人账户授权，不使用 Outlook 密码。
 4. 在本机安全生成 Fernet 密钥（输出是一行 URL-safe ASCII 文本，复制到 `MS_TOKEN_KEY`，不要粘贴到日志、聊天或仓库）：`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`。设置 `MS_CLIENT_ID` 与该 `MS_TOKEN_KEY` 后执行 `python scripts/setup_outlook.py`。它会走设备代码登录，并只写入 `data/microsoft-token.enc`。只提交这个加密缓存；绝不要提交明文 token、`.env` 或密钥。
-5. 为状态提交创建独立的 `AI_DAILY_STATE_TOKEN`：优先使用短有效期、仅限这个私有仓库的 fine-grained personal access token；Repository permissions 只给 **Contents: Read and write**（隐含的 Metadata: Read 除外），不给 Actions、Workflows、Pull requests、Administration 或其他权限。令牌身份必须能在不绕过审阅规则的前提下向受保护默认分支推送生产状态提交。只在 `ai-daily-production` 的 **Environment secrets** 中保存 `AI_DAILY_STATE_TOKEN`、`DEEPSEEK_API_KEY`、`MS_CLIENT_ID`、`MS_TOKEN_KEY`、`OUTLOOK_SENDER`、`MAIL_TO`；不得建立任何同名 repository-level Actions secret，也不得把状态令牌放入 Variable。Environment 必须按第 2 步只允许受保护默认分支。`DEEPSEEK_API_KEY` 可以留空：`full`/`economy` 会自动降级为确定性中文摘要并保持零付费调用；四项 Microsoft/邮件配置仍是发送的必要条件。
-6. 从旧版本迁移时，先停用 `AI_DAILY_SCHEDULE_ENABLED`，从受审阅的本地身份推送本版本并确认仓库已没有 `workflow_dispatch`；再把仓库 Workflow permissions 收紧为只读作为纵深防御，创建 `AI_DAILY_STATE_TOKEN` 和其余 Environment secrets，删除所有同名 repository secrets，最后完成默认分支成本审阅和一次有意的生产投递后才重新启用计划。轮换 `AI_DAILY_STATE_TOKEN` 时同样先停用计划，创建权限相同且短有效期的新令牌、替换 Environment secret、在下一次受控生产写入中确认状态 push 成功，再撤销旧令牌并重新启用计划；不要在日志、Artifact 或 Actions Summary 中粘贴令牌。
+5. 为状态提交创建独立的 `AI_DAILY_STATE_TOKEN`：优先使用短有效期、仅限这个私有仓库的 fine-grained personal access token；Repository permissions 只给 **Contents: Read and write**（隐含的 Metadata: Read 除外），不给 Actions、Workflows、Pull requests、Administration 或其他权限。令牌身份必须能在不绕过审阅规则的前提下向受保护默认分支推送生产状态提交。首次非 AI 交付只在 `ai-daily-production` 的 **Environment secrets** 中保存 `AI_DAILY_STATE_TOKEN`、`MS_CLIENT_ID`、`MS_TOKEN_KEY`、`OUTLOOK_SENDER`、`MAIL_TO`；不得配置或要求 `DEEPSEEK_API_KEY`，不得建立任何同名 repository-level Actions secret，也不得把状态令牌放入 Variable。Environment 必须按第 2 步只允许受保护默认分支。四项 Microsoft/邮件配置仍是发送的必要条件。
+6. 从旧版本迁移时，先停用 `AI_DAILY_SCHEDULE_ENABLED`，从受审阅的本地身份推送本版本并确认仓库已没有 `workflow_dispatch`；再把仓库 Workflow permissions 收紧为只读作为纵深防御，创建 `AI_DAILY_STATE_TOKEN` 和其余 Environment secrets，删除所有同名 repository secrets，最后完成默认分支 `off` 模式预览和一次有意的生产投递后才重新启用计划。轮换 `AI_DAILY_STATE_TOKEN` 时同样先停用计划，创建权限相同且短有效期的新令牌、替换 Environment secret、在下一次受控生产写入中确认状态 push 成功，再撤销旧令牌并重新启用计划；不要在日志、Artifact 或 Actions Summary 中粘贴令牌。
 7. 先运行离线 CI；它只执行 Ruff 和排除 `live` 标记的 pytest，不会采集真实来源、调用模型或发送邮件。
 
 ## 工作流权限与信任边界
@@ -25,7 +25,7 @@
 
 - 人工入口 **AI Daily Request** 只接受 `repository_dispatch`，因此 GitHub 只从默认分支加载并执行这份工作流。严格解析 payload 后，它可以把 `target_ref` 的分支或 tag 检出到独立 `target/` 目录作为无 Secret、无持久 Git 凭据的预览输入；仅凭选择 `target_ref` 不能替换正在运行的默认分支工作流、取得生产 Secret 或写入 AI Daily 状态。目标代码只执行强制 `off` 的确定性安全预览并上传 `ai-daily-safe-preview` Artifact。
 - 独立的 **AI Daily Production** 只从默认分支上的受信工作流代码执行。它由 `workflow_run` 接收请求元数据，但把元数据当作不可信数据：必须来自同仓库、精确默认分支、同一默认分支 SHA、成功的 `repository_dispatch`，并精确匹配预期工作流显示名、`.github/workflows/request.yml` 路径和格式正确的 workflow ID；固定正则只解析 `mode`、`send`、`force`。它不下载或执行请求工作流的 Artifact，也不检出 payload 中的目标 ref。
-- 默认分支的 `send=false` 且 `mode=full|economy` 请求进入只读 `cost_preview`：只显式注入 `DEEPSEEK_API_KEY` 和只读内建 `GITHUB_TOKEN`，不注入 Microsoft、状态提交令牌、令牌缓存密钥、发件人或收件人 Secret。所有检出都使用内建只读 token 且设置 `persist-credentials: false`。`AI_DAILY_STATE_TOKEN` 只在四个独立 push step 的进程环境中存在，由辅助脚本通过进程级 `GIT_CONFIG_*` 临时传给单次 `git push`；它不写入 checkout/git 配置，也不传给安装、日报、预览、Artifact 或 Summary。远端 tip 检查同样只在该检查 step 中接收内建只读 token。生产检出固定到已验证 SHA；分支若推进或出现非 fast-forward 就失败并保留保守状态。
+- 默认分支的 `send=false` 且 `mode=full|economy` 请求仍会进入隔离的只读预览路径，但本次非 AI 交付不注入 `DEEPSEEK_API_KEY`，因此不会产生付费调用；首次预览和发送命令统一使用 `mode=off`。该预览只显式注入只读内建 `GITHUB_TOKEN`，不注入 Microsoft、状态提交令牌、令牌缓存密钥、发件人或收件人 Secret。所有检出都使用内建只读 token 且设置 `persist-credentials: false`。`AI_DAILY_STATE_TOKEN` 只在四个独立 push step 的进程环境中存在，由辅助脚本通过进程级 `GIT_CONFIG_*` 临时传给单次 `git push`；它不写入 checkout/git 配置，也不传给安装、日报、预览、Artifact 或 Summary。远端 tip 检查同样只在该检查 step 中接收内建只读 token。生产检出固定到已验证 SHA；分支若推进或出现非 fast-forward 就失败并保留保守状态。
 - 手动歧义恢复采用同样的 **Resolve AI Daily Delivery Request → Resolve AI Daily Delivery** 两段式边界：前者由默认分支的 `repository_dispatch` 工作流严格验证并记录只读、无 Secret 请求；后者只从默认分支受信代码再次解析允许字段、绑定生产 Environment，并只修改 `data/state.json`。
 
 ## 首次运行顺序
@@ -38,31 +38,31 @@
    gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request -f 'client_payload[target_ref]=refs/heads/feature/example' -f 'client_payload[mode]=off' -F 'client_payload[send]=false' -F 'client_payload[force]=false'
    ```
 
-2. 对**默认分支**提交一次 `mode=full`、`send=false` 的成本预览（或在安全本地环境执行 `ai-daily preview --ai-mode full`），再审阅受信 `ai-daily-cost-preview` 中 `cost-report.json` 的实际输入、缓存命中、缓存未命中、输出 Token、当前成本与 30 天投影；这一步才是**首次运行成本审阅**：
+2. 对**默认分支**提交一次 `mode=off`、`send=false` 的确定性预览（或在安全本地环境执行 `ai-daily preview --ai-mode off`），审阅 `ai-daily-safe-preview` 中的新闻、GitHub 排名、告警和 `cost-report.json`；报告应显示零 AI 调用与零模型成本：
 
    ```text
-   gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request -f 'client_payload[target_ref]=refs/heads/main' -f 'client_payload[mode]=full' -F 'client_payload[send]=false' -F 'client_payload[force]=false'
+   gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request -f 'client_payload[target_ref]=refs/heads/main' -f 'client_payload[mode]=off' -F 'client_payload[send]=false' -F 'client_payload[force]=false'
    ```
 
-   `full` 有完整 AI 选择/总结，`economy` 保留规则选定候选并减少工作，`off` 不调用模型且成本为零。若 Environment 中没有 AI key，这次请求会明确显示有效模式为 `off`、零 AI 调用和确定性内容，不能作为付费成本证据。
+   `off` 不调用模型且成本为零。`full`/`economy` 的代码路径留待后续单独完成使用量核对与成本投影修复、重新审阅并显式启用；不要在本次首发中配置 AI key 或把模式改为非 `off`。
 
-3. 只有完整模式的无发送预览、内容和成本均审核通过后，才对默认分支提交一次有意发送。受信生产工作流会检查权限后再执行投递：
+3. 只有 `off` 模式的无发送预览、内容和零成本报告均审核通过后，才对默认分支提交一次有意发送。受信生产工作流会检查权限后再执行投递：
 
    ```text
-   gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request -f 'client_payload[target_ref]=refs/heads/main' -f 'client_payload[mode]=full' -F 'client_payload[send]=true' -F 'client_payload[force]=false'
+   gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request -f 'client_payload[target_ref]=refs/heads/main' -f 'client_payload[mode]=off' -F 'client_payload[send]=true' -F 'client_payload[force]=false'
    ```
 
    检查 Graph 接受结果、邮箱、`digests/`、`data/` 和加密缓存更新。在已批准的 `repository_dispatch` 路径中，功能分支和 tag 目标只得到强制 `off` 的安全预览，不接收生产 Secret，也不能改变共享的 sent/intent 状态；这不改变“同仓库写入者本身属于受信主体”的前提。
 4. 同日再次运行将是 already-sent no-op；只在已知上一封已完成、且确实需要重发时使用下面的 `force=true` 请求。`force` 不能覆盖投递状态不明的 intent。主任务与 07:22 补偿任务由并发锁串行执行；补偿任务只会自动重试能够证明 Graph 尚未被调用的失败。
 
    ```text
-   gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request -f 'client_payload[target_ref]=refs/heads/main' -f 'client_payload[mode]=full' -F 'client_payload[send]=true' -F 'client_payload[force]=true'
+   gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request -f 'client_payload[target_ref]=refs/heads/main' -f 'client_payload[mode]=off' -F 'client_payload[send]=true' -F 'client_payload[force]=true'
    ```
-5. 初次推送时，`AI_DAILY_SCHEDULE_ENABLED` 缺失即视为关闭，`06:47` 和 `07:22` 两个 Asia/Shanghai、08:00 前的定时入口不会发送。完成成本审阅后，在仓库 **Settings → Secrets and variables → Actions → Variables** 新建或编辑变量 `AI_DAILY_SCHEDULE_ENABLED`，值严格设为 `true`，才启用计划。要立即禁用，改为 `false` 或删除该变量；手动 Request 不受此门控影响，但仍受默认分支与 Environment 保护。
+5. 初次推送时，`AI_DAILY_SCHEDULE_ENABLED` 缺失即视为关闭，`06:47` 和 `07:22` 两个 Asia/Shanghai、08:00 前的定时入口不会发送。完成 `off` 预览与首封人工投递后，在仓库 **Settings → Secrets and variables → Actions → Variables** 新建或编辑变量 `AI_DAILY_SCHEDULE_ENABLED`，值严格设为 `true`，才启用计划；计划命令显式使用 `--ai-mode off`。要立即禁用，改为 `false` 或删除该变量；手动 Request 不受此门控影响，但仍受默认分支与 Environment 保护。
 
 ## 来源诊断与恢复
 
-- 使用独立的只读 **Validate AI Daily Sources** `repository_dispatch`，或执行 `ai-daily validate-sources --minimum-success 80` 检查已启用来源。工作流请求命令如下；它只从默认分支加载代码、严格接受 `0..100` 的整数阈值、安装生产锁定依赖，且不持有发信或仓库写权限。Actions Summary 提供逐来源的脱敏诊断；低于阈值会失败，但单个来源失败不会阻断一份仍有可用内容的日报。
+- 使用独立的只读 **Validate AI Daily Sources** `repository_dispatch`，或执行 `ai-daily validate-sources --minimum-success 80` 检查已启用来源。工作流请求命令如下；它只从默认分支加载代码、严格接受 `0..100` 的整数阈值、安装生产锁定依赖，且不持有发信或仓库写权限。Actions Summary 分列成功、`HEALTHY_EMPTY`（结构与连接正常但 90 天窗口没有条目）和失败；`HEALTHY_EMPTY` 计入健康阈值，真正的 schema/解析失败才消耗阈值。低于阈值会失败，但单个来源失败不会阻断一份仍有可用内容的日报。
 
   ```text
   gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-validate-sources -F 'client_payload[minimum_success]=80'
@@ -109,7 +109,7 @@ ai-daily resolve-delivery sent --date 2026-08-24 --message-id mailbox-confirmed-
 
 ## 日常安全边界
 
-受信生产工作流用 step-scoped 内建只读 token 确认远端默认分支仍精确指向获准 SHA，再单独提交并用 step-scoped `AI_DAILY_STATE_TOKEN` 推送 `data/state.json` 的 reservation，之后才运行发信步骤；成功后基于同一份已验证代码和本地 reservation 提交继续提交 `data/`、`digests/` 和可能刷新的 `data/microsoft-token.enc`，中途绝不 pull 或 rebase 到更新代码。所有 push 都是显式默认分支的非 force fast-forward，认证只存在于该 push 子进程的 `GIT_CONFIG_*`；分支推进会让 reservation 前的 push 安全失败，reservation 后的推进或最终 push 失败则保留未解决 intent，等待人工处理。若失败结果是 `not_attempted`，工作流只清除匹配且仍为 `reserved` 的 intent 并持久化；`ambiguous`、`accepted` 或 runner 输出缺失时均保留远端 intent。功能分支 Artifact 只是无 Secret 数据，生产工作流既不下载也不执行它。定时运行始终使用 `config/settings.yaml` 的模式并发送；人工 Request 只能通过默认分支 `repository_dispatch` 提交经过严格解析的 `target_ref`、`mode`、`send` 与 `force` 数据，且非默认 `target_ref` 只能影响安全预览。
+受信生产工作流用 step-scoped 内建只读 token 确认远端默认分支仍精确指向获准 SHA，再单独提交并用 step-scoped `AI_DAILY_STATE_TOKEN` 推送 `data/state.json` 的 reservation，之后才运行发信步骤；成功后基于同一份已验证代码和本地 reservation 提交继续提交 `data/`、`digests/` 和可能刷新的 `data/microsoft-token.enc`，中途绝不 pull 或 rebase 到更新代码。所有 push 都是显式默认分支的非 force fast-forward，认证只存在于该 push 子进程的 `GIT_CONFIG_*`；分支推进会让 reservation 前的 push 安全失败，reservation 后的推进或最终 push 失败则保留未解决 intent，等待人工处理。若失败结果是 `not_attempted`，工作流只清除匹配且仍为 `reserved` 的 intent 并持久化；`ambiguous`、`accepted` 或 runner 输出缺失时均保留远端 intent。功能分支 Artifact 只是无 Secret 数据，生产工作流既不下载也不执行它。当前定时运行显式传入 `--ai-mode off` 并发送；人工 Request 只能通过默认分支 `repository_dispatch` 提交经过严格解析的 `target_ref`、`mode`、`send` 与 `force` 数据，且非默认 `target_ref` 只能影响安全预览。
 
 ## 安装与依赖锁定
 

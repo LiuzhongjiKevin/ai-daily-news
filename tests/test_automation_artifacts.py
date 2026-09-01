@@ -496,12 +496,11 @@ def test_trusted_cost_preview_and_delivery_have_disjoint_authority() -> None:
         step for step in delivery["steps"] if step.get("name") == "Run daily digest"
     )
 
-    assert set(preview_run["env"]) == {"DEEPSEEK_API_KEY", "GITHUB_TOKEN"}
+    assert set(preview_run["env"]) == {"GITHUB_TOKEN"}
     assert all(name not in str(preview) for name in ("MS_CLIENT_ID", "MS_TOKEN_KEY", "OUTLOOK_SENDER", "MAIL_TO"))
     assert "ai-daily preview" in preview_run["run"]
     assert "--send" not in preview_run["run"]
     assert set(delivery_run["env"]) == {
-        "DEEPSEEK_API_KEY",
         "MS_CLIENT_ID",
         "MS_TOKEN_KEY",
         "OUTLOOK_SENDER",
@@ -509,6 +508,28 @@ def test_trusted_cost_preview_and_delivery_have_disjoint_authority() -> None:
         "GITHUB_TOKEN",
     }
     assert "ai-daily run --send" in delivery_run["run"]
+
+
+def test_first_delivery_workflow_keeps_ai_dormant_and_schedules_off_mode() -> None:
+    """Would catch first deployment silently requiring DeepSeek or scheduling paid AI."""
+    workflow = load_workflow("daily.yml")
+    preview_run = next(
+        step
+        for step in workflow["jobs"]["cost_preview"]["steps"]
+        if step.get("name") == "Run trusted cost preview"
+    )
+    delivery_run = next(
+        step
+        for step in workflow["jobs"]["daily"]["steps"]
+        if step.get("name") == "Run daily digest"
+    )
+
+    assert "DEEPSEEK_API_KEY" not in preview_run.get("env", {})
+    assert "DEEPSEEK_API_KEY" not in delivery_run.get("env", {})
+    assert 'mode_arg="--ai-mode off"' in delivery_run["run"]
+    assert 'ai-daily run --send --attempt-id "${AI_DAILY_ATTEMPT_ID}" ${mode_arg}' in (
+        delivery_run["run"]
+    )
 
 
 def test_builtin_tokens_are_read_only_and_state_token_is_confined_to_write_jobs() -> None:
@@ -964,12 +985,12 @@ def test_operator_guide_contains_private_outlook_and_safety_invariants() -> None
         "AI_DAILY_STATE_TOKEN",
         "GITHUB_TOKEN",
         "仅表示 Microsoft Graph 已接受/排队",
-        "首次运行成本审阅",
+        "零模型成本",
         "撤销",
         "轮换",
         "补偿",
         "send=false",
-        "mode=full`、`send=false",
+        "`mode=off`、`send=false`",
         "允许公共客户端流",
         "Fernet.generate_key",
         "--replace",

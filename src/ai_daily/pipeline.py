@@ -32,8 +32,8 @@ from ai_daily.collectors.github import (
 from ai_daily.config import AppSettings, PricingTable
 from ai_daily.cost import CostReport, calculate_cost
 from ai_daily.github_rank import (
-    historical_candidate_names,
-    load_recent_snapshots,
+    load_recent_snapshots_with_warnings,
+    load_snapshot_safely,
     rank_repositories,
 )
 from ai_daily.models import (
@@ -211,13 +211,18 @@ class DailyPipeline:
     def collect_and_rank_repositories(self, day: date) -> GitHubRankingBatch:
         """Rank today's snapshot before atomically persisting it, with no retention side effect."""
         collected_at = self.clock.now(_timezone(self.settings.timezone))
+        baseline, has_full_baseline, history, history_warnings = (
+            load_recent_snapshots_with_warnings(
+                self.state_store, day, self.settings.github_window_days
+            )
+        )
         collection_failure: GitHubCollectionError | None = None
         try:
             names = self.discover_repositories(
                 self.github_client,
                 self.github_token,
                 day,
-                historical_candidate_names(self.state_store, day, self.settings.github_window_days),
+                [snapshot.repository for snapshot in history],
             )
             current = self.fetch_repositories(
                 self.github_client,
@@ -226,19 +231,20 @@ class DailyPipeline:
                 collected_at,
             )
         except (httpx.HTTPError, GitHubDataError, GitHubResponseError):
-            collection_failure = GitHubCollectionError("GitHub data is unavailable")
+            collection_failure = GitHubCollectionError(
+                "GitHub data is unavailable", warnings=history_warnings
+            )
         if collection_failure is not None:
             raise collection_failure
 
-        metadata_warnings = (
-            list(current.warnings) if isinstance(current, GitHubSnapshotBatch) else []
-        )
+        metadata_warnings = list(history_warnings)
+        if isinstance(current, GitHubSnapshotBatch):
+            self._extend_unique(metadata_warnings, current.warnings)
         current_snapshots = list(current)
 
-        baseline, has_full_baseline, _ = load_recent_snapshots(
-            self.state_store, day, self.settings.github_window_days
-        )
-        fallback = self._retained_snapshots(day)
+        retained_warnings: list[str] = []
+        fallback = self._retained_snapshots(day, retained_warnings)
+        self._extend_unique(metadata_warnings, retained_warnings)
         ranked = rank_repositories(
             current_snapshots,
             baseline,
@@ -320,15 +326,15 @@ class DailyPipeline:
             try:
                 ranking_batch = self.collect_and_rank_repositories(local_now.date())
                 ranked_repos = list(ranking_batch)
-                warnings.extend(ranking_batch.warnings)
+                self._extend_unique(warnings, ranking_batch.warnings)
                 result.github_status = "current"
                 result.github_data_date = local_date
             except GitHubCollectionError as error:
-                warnings.extend(error.warnings)
+                self._extend_unique(warnings, error.warnings)
                 ranked_repos, cached_day, ranking_warnings = self._load_cached_rankings(
                     local_now.date()
                 )
-                warnings.extend(ranking_warnings)
+                self._extend_unique(warnings, ranking_warnings)
                 if cached_day is None:
                     warnings.append("GitHub data unavailable; no cached snapshot used")
                     result.github_status = "unavailable"
@@ -460,7 +466,9 @@ class DailyPipeline:
             # The workflow cleanup step retries this operation. Retaining intent is conservative.
             return
 
-    def _retained_snapshots(self, today: date) -> list[RepoSnapshot]:
+    def _retained_snapshots(
+        self, today: date, warnings: list[str] | None = None
+    ) -> list[RepoSnapshot]:
         snapshots: list[RepoSnapshot] = []
         for snapshot_day in sorted(
             self.state_store.recent_snapshot_days(
@@ -469,7 +477,10 @@ class DailyPipeline:
                 retention_days=self.settings.snapshot_retention_days,
             )
         ):
-            snapshots.extend(self.state_store.load_snapshot(snapshot_day))
+            rows, day_warnings = load_snapshot_safely(self.state_store, snapshot_day)
+            snapshots.extend(rows)
+            if warnings is not None:
+                self._extend_unique(warnings, day_warnings)
         return snapshots
 
     def _load_cached_rankings(
@@ -481,25 +492,35 @@ class DailyPipeline:
             limit=self.settings.snapshot_retention_days,
             retention_days=self.settings.snapshot_retention_days,
         ):
-            try:
-                snapshots = self.state_store.load_snapshot(snapshot_day)
-            except (OSError, ValueError):
-                continue
+            snapshots, day_warnings = load_snapshot_safely(
+                self.state_store, snapshot_day
+            )
+            self._extend_unique(exclusion_warnings, day_warnings)
             if snapshots:
-                baseline = self.state_store.load_snapshot(
+                baseline, baseline_warnings = load_snapshot_safely(
+                    self.state_store,
                     snapshot_day - timedelta(days=self.settings.github_window_days)
                 )
+                self._extend_unique(exclusion_warnings, baseline_warnings)
+                retained_warnings: list[str] = []
                 ranked = rank_repositories(
                     snapshots,
                     baseline,
                     self.settings.github_top_n,
                     has_full_baseline=bool(baseline),
-                    fallback=self._retained_snapshots(snapshot_day),
+                    fallback=self._retained_snapshots(snapshot_day, retained_warnings),
                 )
+                self._extend_unique(exclusion_warnings, retained_warnings)
                 exclusion_warnings.extend(ranked.warnings)
                 if ranked:
                     return ranked, snapshot_day, exclusion_warnings
         return [], None, exclusion_warnings
+
+    @staticmethod
+    def _extend_unique(target: list[str], additions: list[str] | tuple[str, ...]) -> None:
+        for warning in additions:
+            if warning not in target:
+                target.append(warning)
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:

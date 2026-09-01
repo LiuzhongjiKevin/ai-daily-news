@@ -381,6 +381,22 @@ def test_priority_order_preserves_trending_search_and_history_before_metadata_ca
     assert metadata_names == ["zz/trending", "zz/history", "zz/search"]
 
 
+def test_rank_and_store_skips_a_corrupt_exact_baseline(tmp_path: Path) -> None:
+    """Would catch the reusable ranking entry point bypassing corrupt-history isolation."""
+    store = StateStore(tmp_path)
+    store.snapshot_dir.mkdir(parents=True)
+    (store.snapshot_dir / (TODAY - timedelta(days=7)).isoformat()).with_suffix(
+        ".json"
+    ).write_text("not-json", encoding="utf-8")
+
+    ranked = rank_and_store_repositories(store, TODAY, [snap("owner/repo", 100)])
+
+    assert [(row.snapshot.repository, row.stars_gained, row.is_trial) for row in ranked] == [
+        ("owner/repo", 0, True)
+    ]
+    assert store.load_snapshot(TODAY) == [snap("owner/repo", 100)]
+
+
 def test_rank_and_store_saves_then_prunes_only_after_successful_ranking(tmp_path: Path, monkeypatch) -> None:
     """Would catch retention deleting historical baselines before a ranking can be produced."""
     store = StateStore(tmp_path)

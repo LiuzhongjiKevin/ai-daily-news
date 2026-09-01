@@ -13,6 +13,18 @@ _EXPLICIT_MIRROR = re.compile(
 )
 
 
+def load_snapshot_safely(
+    store: StateStore, snapshot_day: date
+) -> tuple[list[RepoSnapshot], list[str]]:
+    """Load one retained snapshot without exposing local paths or malformed content."""
+    try:
+        return store.load_snapshot(snapshot_day), []
+    except (OSError, ValueError):
+        return [], [
+            f"GitHub history snapshot {snapshot_day.isoformat()} was invalid and skipped"
+        ]
+
+
 class RepositoryRankingBatch(list[RankedRepo]):
     """Rankings plus aggregate, reader-safe reasons for conservative exclusions."""
 
@@ -103,19 +115,39 @@ def load_recent_snapshots(
     store: StateStore, today: date, window_days: int = 7
 ) -> tuple[list[RepoSnapshot], bool, list[RepoSnapshot]]:
     """Load the exact baseline, or the oldest saved snapshot available during the first week."""
+    baseline, has_full_baseline, history, _ = load_recent_snapshots_with_warnings(
+        store, today, window_days
+    )
+    return baseline, has_full_baseline, history
+
+
+def load_recent_snapshots_with_warnings(
+    store: StateStore, today: date, window_days: int = 7
+) -> tuple[list[RepoSnapshot], bool, list[RepoSnapshot], list[str]]:
+    """Load validated recent history while reporting each corrupt file once."""
     if window_days < 1:
         raise ValueError("window_days must be positive")
     history: list[RepoSnapshot] = []
+    warnings: list[str] = []
+    loaded: dict[date, list[RepoSnapshot]] = {}
     recent_days = sorted(store.recent_snapshot_days(today, limit=window_days))
     for day in recent_days:
-        history.extend(store.load_snapshot(day))
+        snapshots, day_warnings = load_snapshot_safely(store, day)
+        loaded[day] = snapshots
+        history.extend(snapshots)
+        warnings.extend(day_warnings)
     exact_day = today - timedelta(days=window_days)
-    exact = store.load_snapshot(exact_day)
+    if exact_day in loaded:
+        exact = loaded[exact_day]
+    else:
+        exact, exact_warnings = load_snapshot_safely(store, exact_day)
+        warnings.extend(exact_warnings)
     if exact:
-        return exact, True, history
-    if recent_days:
-        return store.load_snapshot(recent_days[0]), False, history
-    return [], False, history
+        return exact, True, history, warnings
+    for recent_day in recent_days:
+        if loaded[recent_day]:
+            return loaded[recent_day], False, history, warnings
+    return [], False, history, warnings
 
 
 def historical_candidate_names(store: StateStore, today: date, window_days: int = 7) -> list[str]:
@@ -134,7 +166,8 @@ def _retained_snapshots(store: StateStore, today: date, retention_days: int) -> 
             retention_days=retention_days,
         )
     ):
-        snapshots.extend(store.load_snapshot(day))
+        rows, _ = load_snapshot_safely(store, day)
+        snapshots.extend(rows)
     return snapshots
 
 
@@ -148,7 +181,9 @@ def rank_and_store_repositories(
     retention_days: int = 35,
 ) -> list[RankedRepo]:
     """Rank before atomically saving the current snapshot, then prune retained history."""
-    exact_baseline = store.load_snapshot(today - timedelta(days=window_days))
+    exact_baseline, _ = load_snapshot_safely(
+        store, today - timedelta(days=window_days)
+    )
     ranked = rank_repositories(
         current,
         exact_baseline,

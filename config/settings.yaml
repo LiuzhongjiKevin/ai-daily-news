@@ -1,5 +1,5 @@
 timezone: Asia/Shanghai
-ai_mode: full
+ai_mode: "off"
 ai_base_url: https://api.deepseek.com
 ai_model: deepseek-v4-flash
 ai_max_output_tokens: 2500

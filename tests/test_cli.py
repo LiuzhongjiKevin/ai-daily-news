@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
+import httpx
 import pytest
 
 
@@ -175,6 +176,106 @@ def test_validate_sources_threshold_writes_redacted_markdown_summary(
     assert "reader@example.test" not in summary_text
     assert "oauth-value" not in summary_text
     assert main(["validate-sources", "--minimum-success", "80"]) == 1
+
+
+def test_validate_sources_counts_healthy_empty_as_passing_and_labels_summary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Would catch quiet discovery/releases lowering the source-health threshold."""
+    from ai_daily.cli import main
+
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(
+        "ai_daily.cli.validate_sources",
+        lambda: [
+            ("official", None),
+            ("quiet-release", "healthy_empty"),
+            ("broken-page", "PageParseError: selector mismatch"),
+        ],
+    )
+
+    assert main(["validate-sources", "--minimum-success", "66"]) == 0
+    output = capsys.readouterr().out
+    summary_text = summary.read_text(encoding="utf-8")
+    assert "2/3 (66.7%)" in output
+    assert "Successful: 1" in summary_text
+    assert "Healthy empty: 1" in summary_text
+    assert "Failed: 1" in summary_text
+    assert "HEALTHY_EMPTY" in summary_text
+    assert "Threshold: PASS (66% required)" in summary_text
+
+    assert main(["validate-sources", "--minimum-success", "67"]) == 1
+
+
+def test_validate_sources_keeps_valid_empty_and_malformed_schema_distinct(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Would catch a malformed discovery schema being folded into healthy emptiness."""
+    from ai_daily.cli import validate_sources
+    from ai_daily.collectors.base import SourceConfig
+
+    sources = [
+        SourceConfig(
+            id="quiet-discovery",
+            name="Quiet discovery",
+            kind="discovery",
+            source_type="discovery",
+            url="https://quiet.test/discovery",
+            language="en",
+            category="industry",
+            allowed_domains=["example.test"],
+        ),
+        SourceConfig(
+            id="quiet-release",
+            name="Quiet release",
+            kind="github_releases",
+            source_type="release",
+            url="https://api.github.com/repos/acme/quiet/releases",
+            language="en",
+            category="open_source",
+        ),
+        SourceConfig(
+            id="malformed-discovery",
+            name="Malformed discovery",
+            kind="discovery",
+            source_type="discovery",
+            url="https://malformed.test/discovery",
+            language="en",
+            category="industry",
+            allowed_domains=["example.test"],
+        ),
+    ]
+
+    class OfflineClient:
+        def get(self, url: str, **_: object) -> httpx.Response:
+            payload: object
+            if "quiet.test" in url:
+                payload = {"articles": []}
+            elif "api.github.com" in url:
+                payload = []
+            else:
+                payload = {"unexpected": []}
+            return httpx.Response(
+                200,
+                json=payload,
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr("ai_daily.cli.project_root", lambda: tmp_path)
+    monkeypatch.setattr("ai_daily.cli._load_sources", lambda _: sources)
+    monkeypatch.setattr("ai_daily.cli.RetryingClient", lambda **_: OfflineClient())
+
+    outcomes = validate_sources()
+
+    assert outcomes[:2] == [
+        ("quiet-discovery", "healthy_empty"),
+        ("quiet-release", "healthy_empty"),
+    ]
+    assert outcomes[2][0] == "malformed-discovery"
+    assert outcomes[2][1] and outcomes[2][1].startswith(
+        "SourceParseError: discovery response schema is invalid"
+    )
 
 
 def test_cli_reports_already_sent_without_recipient_details(
