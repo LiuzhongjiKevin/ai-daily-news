@@ -984,6 +984,32 @@ def test_operator_guide_contains_private_outlook_and_safety_invariants() -> None
         assert phrase in guide
 
 
+def test_operator_guide_defines_personal_same_repository_writer_trust_boundary() -> None:
+    """Would catch preview isolation being overstated as a sandbox for repository writers."""
+    guide = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    for phrase in (
+        "个人账户/单一受信维护者",
+        "same-repository write access 对内建 `GITHUB_TOKEN` 是受信任的",
+        "绝不要把同一仓库 Write 权限授予不受信任的人",
+        "不受信任的贡献必须来自 fork",
+        "Send write tokens to workflows from pull requests",
+        "Send secrets to workflows from pull requests",
+        "Require approval for all outside collaborators",
+        "Require approval for first-time contributors",
+        "Read repository contents and packages",
+        "只是纵深防御，不是权限上限",
+        "默认分支必须受保护",
+        "`ai-daily-production` Environment 必须只允许该默认分支",
+        "生产 Secrets 和 `AI_DAILY_STATE_TOKEN`",
+        "`target_ref`",
+        "不是对已经获得同仓库 Write 权限者的仓库级沙箱",
+    ):
+        assert phrase in guide
+
+    assert "它们不能获得生产 Secret、写权限" not in guide
+
+
 def test_operator_guide_requires_serialized_terminal_owner_recovery() -> None:
     """Would catch docs telling an operator to clear intent while its owner can still send."""
     guide = (ROOT / "README.md").read_text(encoding="utf-8")

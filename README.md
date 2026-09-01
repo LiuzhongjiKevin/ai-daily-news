@@ -4,7 +4,7 @@
 
 ## 上线前准备
 
-1. 创建**私有仓库**并推送此项目。确定唯一默认分支（以下以 `main` 为例），启用分支保护，至少禁止直接绕过审阅修改生产工作流。然后在 **Settings → Actions → General → Workflow permissions** 中把默认权限设为 **Read repository contents and packages**，并关闭 “Allow GitHub Actions to create and approve pull requests”，作为纵深防御。这个仓库设置只是新工作流的默认权限，不是不可突破的权限上限：工作流仍可能显式申请更高权限。因此真正的代码信任边界是仓库中不存在可选择 ref 的 `workflow_dispatch`，所有人工控制都通过只从默认分支读取工作流定义的 `repository_dispatch` 进入，并且每个 job/step 继续显式最小授权。`GITHUB_TOKEN` 由 GitHub Actions 内建提供，无须建立为自定义 Secret。
+1. 创建**私有仓库**并推送此项目。确定唯一默认分支（以下以 `main` 为例），启用分支保护，至少禁止直接绕过审阅修改生产工作流。然后在 **Settings → Actions → General → Workflow permissions** 中把默认权限设为 **Read repository contents and packages**，并关闭 “Allow GitHub Actions to create and approve pull requests”，作为纵深防御。这个仓库设置只是新工作流的默认权限，不是不可突破的权限上限：工作流仍可能显式申请更高权限。所有人工控制都通过只从默认分支读取工作流定义的 `repository_dispatch` 进入，并且每个 job/step 继续显式最小授权；这保护已批准的人工控制路径，但不是对同仓库写入者的通用沙箱。`GITHUB_TOKEN` 由 GitHub Actions 内建提供，无须建立为自定义 Secret。
 2. 在 **Settings → Environments** 创建 `ai-daily-production`。在它的 **Deployment branches and tags** 中只允许受保护的默认分支：优先选择 “Selected branches and tags” 并只加入精确的 `main` 分支，不加入 tag 或通配分支；同时启用所需审批/保护规则。生产任务还会校验事件类型、仓库、完整默认分支 ref、branch 类型、大小写和触发 SHA，但 Environment 分支策略仍是必须的第二道边界。
 3. 在 Microsoft Entra 管理中心注册“仅个人 Microsoft 账户”可用的应用，记录应用（客户端）ID，并为委托权限添加 `Mail.Send`。在“身份验证”中**允许公共客户端流**，以启用设备代码登录。只给个人账户授权，不使用 Outlook 密码。
 4. 在本机安全生成 Fernet 密钥（输出是一行 URL-safe ASCII 文本，复制到 `MS_TOKEN_KEY`，不要粘贴到日志、聊天或仓库）：`python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`。设置 `MS_CLIENT_ID` 与该 `MS_TOKEN_KEY` 后执行 `python scripts/setup_outlook.py`。它会走设备代码登录，并只写入 `data/microsoft-token.enc`。只提交这个加密缓存；绝不要提交明文 token、`.env` 或密钥。
@@ -14,7 +14,16 @@
 
 ## 工作流权限与信任边界
 
-- 人工入口 **AI Daily Request** 只接受 `repository_dispatch`，因此 GitHub 只从默认分支加载并执行这份工作流。严格解析 payload 后，它可以把 `target_ref` 的分支或 tag 检出到独立 `target/` 目录作为无 Secret、无持久 Git 凭据的预览输入；目标代码只能执行强制 `off` 的确定性安全预览并上传 `ai-daily-safe-preview` Artifact，不能定义正在运行的工作流、获得生产 Secret 或写状态。
+### 适用的威胁模型（个人账户/单一受信维护者）
+
+- 本项目按个人账户/单一受信维护者设计：任何 same-repository write access 对内建 `GITHUB_TOKEN` 是受信任的。GitHub 工作流无法在仓库内部阻止已经拥有同仓库写权限的人新增 `push` 工作流并显式申请内建 token scopes，因此绝不要把同一仓库 Write 权限授予不受信任的人。
+- 不受信任的贡献必须来自 fork，不能使用同一仓库的功能分支。保持 GitHub Actions 的 fork pull request 设置不向 fork PR 发送写 token 或 Secrets：关闭 **Send write tokens to workflows from pull requests** 和 **Send secrets to workflows from pull requests**；审批策略优先选择 **Require approval for all outside collaborators**，若账户界面不提供该选项，至少选择 **Require approval for first-time contributors**。默认 Workflow permissions 设为 **Read repository contents and packages** 只是纵深防御，不是权限上限。
+- 默认分支必须受保护，`ai-daily-production` Environment 必须只允许该默认分支，并把所有生产 Secret 和状态提交凭据仅放在这个 Environment 中。在这一模型和设置下，功能分支/标签目标代码拿不到生产 Secrets 和 `AI_DAILY_STATE_TOKEN`，也不能通过已批准的工作流改变 AI Daily 生产状态。
+- `repository_dispatch` 的 `target_ref` 只让目标分支/标签代码进入无 Secret、无持久凭据且强制 `off` 的预览路径，因此对于生产 Secrets 和 AI Daily 状态变更是安全的；但它不是对已经获得同仓库 Write 权限者的仓库级沙箱，此类受信写入者仍能在仓库中添加自己的工作流并申请内建 `GITHUB_TOKEN` scopes。
+
+### 已批准工作流的边界
+
+- 人工入口 **AI Daily Request** 只接受 `repository_dispatch`，因此 GitHub 只从默认分支加载并执行这份工作流。严格解析 payload 后，它可以把 `target_ref` 的分支或 tag 检出到独立 `target/` 目录作为无 Secret、无持久 Git 凭据的预览输入；仅凭选择 `target_ref` 不能替换正在运行的默认分支工作流、取得生产 Secret 或写入 AI Daily 状态。目标代码只执行强制 `off` 的确定性安全预览并上传 `ai-daily-safe-preview` Artifact。
 - 独立的 **AI Daily Production** 只从默认分支上的受信工作流代码执行。它由 `workflow_run` 接收请求元数据，但把元数据当作不可信数据：必须来自同仓库、精确默认分支、同一默认分支 SHA、成功的 `repository_dispatch`，并精确匹配预期工作流显示名、`.github/workflows/request.yml` 路径和格式正确的 workflow ID；固定正则只解析 `mode`、`send`、`force`。它不下载或执行请求工作流的 Artifact，也不检出 payload 中的目标 ref。
 - 默认分支的 `send=false` 且 `mode=full|economy` 请求进入只读 `cost_preview`：只显式注入 `DEEPSEEK_API_KEY` 和只读内建 `GITHUB_TOKEN`，不注入 Microsoft、状态提交令牌、令牌缓存密钥、发件人或收件人 Secret。所有检出都使用内建只读 token 且设置 `persist-credentials: false`。`AI_DAILY_STATE_TOKEN` 只在四个独立 push step 的进程环境中存在，由辅助脚本通过进程级 `GIT_CONFIG_*` 临时传给单次 `git push`；它不写入 checkout/git 配置，也不传给安装、日报、预览、Artifact 或 Summary。远端 tip 检查同样只在该检查 step 中接收内建只读 token。生产检出固定到已验证 SHA；分支若推进或出现非 fast-forward 就失败并保留保守状态。
 - 手动歧义恢复采用同样的 **Resolve AI Daily Delivery Request → Resolve AI Daily Delivery** 两段式边界：前者由默认分支的 `repository_dispatch` 工作流严格验证并记录只读、无 Secret 请求；后者只从默认分支受信代码再次解析允许字段、绑定生产 Environment，并只修改 `data/state.json`。
@@ -43,7 +52,7 @@
    gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request -f 'client_payload[target_ref]=refs/heads/main' -f 'client_payload[mode]=full' -F 'client_payload[send]=true' -F 'client_payload[force]=false'
    ```
 
-   检查 Graph 接受结果、邮箱、`digests/`、`data/` 和加密缓存更新。功能分支和 tag 永远只得到强制 `off` 的安全预览；它们不能获得生产 Secret、写权限或另一套分支隔离的 sent/intent 状态。
+   检查 Graph 接受结果、邮箱、`digests/`、`data/` 和加密缓存更新。在已批准的 `repository_dispatch` 路径中，功能分支和 tag 目标只得到强制 `off` 的安全预览，不接收生产 Secret，也不能改变共享的 sent/intent 状态；这不改变“同仓库写入者本身属于受信主体”的前提。
 4. 同日再次运行将是 already-sent no-op；只在已知上一封已完成、且确实需要重发时使用下面的 `force=true` 请求。`force` 不能覆盖投递状态不明的 intent。主任务与 07:22 补偿任务由并发锁串行执行；补偿任务只会自动重试能够证明 Graph 尚未被调用的失败。
 
    ```text
