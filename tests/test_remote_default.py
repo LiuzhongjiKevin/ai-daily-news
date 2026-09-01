@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import subprocess
 from pathlib import Path
@@ -21,16 +22,34 @@ def load_module() -> object:
 def test_remote_default_requires_exact_authorized_tip() -> None:
     """Would catch a mutable default branch advancing before the first state mutation."""
     module = load_module()
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], dict[str, object]]] = []
 
     def runner(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append(args)
+        calls.append((args, kwargs))
         return subprocess.CompletedProcess(
             args, 0, stdout=f"{AUTHORIZED_SHA}\trefs/heads/main\n", stderr=""
         )
 
-    assert module.remote_default_matches("main", AUTHORIZED_SHA, run=runner) is True
-    assert calls == [["git", "ls-remote", "--exit-code", "origin", "refs/heads/main"]]
+    assert (
+        module.remote_default_matches(
+            "main", AUTHORIZED_SHA, github_token="built-in-read-token", run=runner
+        )
+        is True
+    )
+    assert calls[0][0] == [
+        "git",
+        "ls-remote",
+        "--exit-code",
+        "origin",
+        "refs/heads/main",
+    ]
+    git_environment = calls[0][1]["env"]
+    assert isinstance(git_environment, dict)
+    assert git_environment["GIT_CONFIG_COUNT"] == "1"
+    assert git_environment["GIT_CONFIG_KEY_0"] == "http.extraheader"
+    expected = base64.b64encode(b"x-access-token:built-in-read-token").decode("ascii")
+    assert git_environment["GIT_CONFIG_VALUE_0"] == f"AUTHORIZATION: basic {expected}"
+    assert git_environment.get("GITHUB_TOKEN") is None
 
 
 @pytest.mark.parametrize(

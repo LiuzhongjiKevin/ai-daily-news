@@ -48,6 +48,7 @@ def test_daily_uses_all_reviewed_action_pins() -> None:
     ]
     assert [step["uses"] for step in request_steps if "uses" in step] == [
         "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+        "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
         "actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38",
         "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
     ]
@@ -113,7 +114,7 @@ def test_daily_schedule_manual_inputs_and_state_commit_are_restricted() -> None:
     assert "git add -- data/ digests/ data/microsoft-token.enc" in commits[-1]
     assert all("git add -A" not in commit for commit in commits)
     assert all("git pull" not in commit for commit in commits)
-    assert all('git push origin HEAD:"refs/heads/${DEFAULT_BRANCH}"' in commit for commit in commits)
+    assert all("git push" not in commit for commit in commits)
     assert all("--force" not in commit for commit in commits)
     assert "Refusing to send without a new local reservation." in commits[0]
 
@@ -145,7 +146,7 @@ def test_scheduled_delivery_requires_explicit_repository_variable_gate() -> None
             "workflow_run",
             "refs/heads/main",
             "branch",
-            "workflow_dispatch",
+            "repository_dispatch",
             "main",
             "owner/repository",
             True,
@@ -155,7 +156,7 @@ def test_scheduled_delivery_requires_explicit_repository_variable_gate() -> None
             "workflow_run",
             "refs/heads/main",
             "branch",
-            "workflow_dispatch",
+            "repository_dispatch",
             "feature/safe-preview",
             "owner/repository",
             False,
@@ -165,7 +166,7 @@ def test_scheduled_delivery_requires_explicit_repository_variable_gate() -> None
             "workflow_run",
             "refs/heads/main",
             "branch",
-            "workflow_dispatch",
+            "repository_dispatch",
             "Main",
             "owner/repository",
             False,
@@ -175,7 +176,7 @@ def test_scheduled_delivery_requires_explicit_repository_variable_gate() -> None
             "workflow_run",
             "refs/heads/main",
             "branch",
-            "workflow_dispatch",
+            "repository_dispatch",
             "",
             "owner/repository",
             False,
@@ -185,7 +186,7 @@ def test_scheduled_delivery_requires_explicit_repository_variable_gate() -> None
             "workflow_run",
             "refs/heads/main",
             "branch",
-            "workflow_dispatch",
+            "repository_dispatch",
             "main",
             "other/repository",
             False,
@@ -267,7 +268,7 @@ def test_production_authority_rejects_same_named_tag_or_stale_ref_at_another_sha
         "GITHUB_SHA": AUTHORIZED_SHA,
         "DEFAULT_BRANCH": "main",
         "GITHUB_REPOSITORY": "owner/repository",
-        "TRIGGER_EVENT": "workflow_dispatch",
+        "TRIGGER_EVENT": "repository_dispatch",
         "TRIGGER_HEAD_BRANCH": "main",
         "TRIGGER_HEAD_REPOSITORY": "owner/repository",
         "TRIGGER_HEAD_SHA": "b" * 40,
@@ -324,7 +325,7 @@ def test_production_authority_rejects_wrong_or_malformed_workflow_identity(
             "GITHUB_SHA": AUTHORIZED_SHA,
             "DEFAULT_BRANCH": "main",
             "GITHUB_REPOSITORY": "owner/repository",
-            "TRIGGER_EVENT": "workflow_dispatch",
+            "TRIGGER_EVENT": "repository_dispatch",
             "TRIGGER_HEAD_BRANCH": "main",
             "TRIGGER_HEAD_SHA": AUTHORIZED_SHA,
             "TRIGGER_HEAD_REPOSITORY": "owner/repository",
@@ -364,7 +365,7 @@ def test_production_authority_rejects_equal_but_malformed_repository_metadata(
             "GITHUB_SHA": AUTHORIZED_SHA,
             "DEFAULT_BRANCH": "main",
             "GITHUB_REPOSITORY": repository,
-            "TRIGGER_EVENT": "workflow_dispatch",
+            "TRIGGER_EVENT": "repository_dispatch",
             "TRIGGER_HEAD_BRANCH": "main",
             "TRIGGER_HEAD_SHA": AUTHORIZED_SHA,
             "TRIGGER_HEAD_REPOSITORY": repository,
@@ -425,16 +426,32 @@ def test_delivery_paths_require_trusted_ref_but_preview_remains_branch_safe() ->
     assert "needs.authorize.outputs.trusted == 'true'" in cost_preview["if"]
 
 
-def test_manual_request_workflow_is_read_only_secretless_and_forces_off_preview() -> None:
-    """Would catch feature code receiving secrets, write authority, or a paid-preview mode."""
+def test_manual_controls_use_default_branch_repository_dispatch_only() -> None:
+    """Would catch an operator selecting a feature-authored workflow with elevated permissions."""
+    workflows = {
+        path.name: load_workflow(path.name)
+        for path in (ROOT / ".github" / "workflows").glob("*.yml")
+    }
+
+    assert all("workflow_dispatch" not in workflow[True] for workflow in workflows.values())
+    assert workflows["request.yml"][True] == {
+        "repository_dispatch": {"types": ["ai-daily-request"]}
+    }
+    assert workflows["resolve-delivery-request.yml"][True] == {
+        "repository_dispatch": {"types": ["ai-daily-resolve"]}
+    }
+    assert workflows["validate-sources.yml"][True] == {
+        "repository_dispatch": {"types": ["ai-daily-validate-sources"]}
+    }
+
+
+def test_manual_request_workflow_is_trusted_read_only_and_checks_out_target_as_data() -> None:
+    """Would catch feature code defining the running workflow or receiving secret/write authority."""
     workflow = load_workflow("request.yml")
-    trigger = workflow[True]
     job = workflow["jobs"]["safe_preview"]
     commands = "\n".join(step.get("run", "") for step in job["steps"])
     serialized = yaml.safe_dump(workflow, sort_keys=True)
 
-    assert set(trigger) == {"workflow_dispatch"}
-    assert trigger["workflow_dispatch"]["inputs"]["send"]["default"] is False
     assert workflow["permissions"] == {"contents": "read"}
     assert job["permissions"] == {"contents": "read"}
     assert "environment" not in job
@@ -443,11 +460,28 @@ def test_manual_request_workflow_is_read_only_secretless_and_forces_off_preview(
     assert "--send" not in commands
     assert "reserve-delivery" not in commands
     assert "git push" not in commands
-    assert "ref_type=${{ github.ref_type }}" in workflow["run-name"]
-    assert "ref=${{ github.ref }}" in workflow["run-name"]
+    assert "mode=${{ github.event.client_payload.mode }}" in workflow["run-name"]
+    assert "ref=${{ github.event.client_payload.target_ref }}" in workflow["run-name"]
+    validation = next(step for step in job["steps"] if step.get("id") == "request")
+    assert validation["run"] == "python scripts/parse_repository_dispatch.py daily"
+    checkouts = [
+        step for step in job["steps"] if "actions/checkout@" in step.get("uses", "")
+    ]
+    assert checkouts[0]["with"] == {
+        "ref": "${{ github.sha }}",
+        "persist-credentials": False,
+    }
+    assert checkouts[1]["with"] == {
+        "ref": "${{ steps.request.outputs.target_ref }}",
+        "path": "target",
+        "persist-credentials": False,
+    }
+    assert job["steps"].index(validation) < job["steps"].index(checkouts[1])
+    preview = next(step for step in job["steps"] if step.get("name") == "Run deterministic safe preview")
+    assert preview["working-directory"] == "target"
     artifact = next(step for step in job["steps"] if "actions/upload-artifact@" in step.get("uses", ""))
     assert artifact["with"]["name"] == "ai-daily-safe-preview"
-    assert artifact["with"]["path"] == "preview/"
+    assert artifact["with"]["path"] == "target/preview/"
 
 
 def test_trusted_cost_preview_and_delivery_have_disjoint_authority() -> None:
@@ -494,20 +528,39 @@ def test_builtin_tokens_are_read_only_and_state_token_is_confined_to_write_jobs(
     daily = load_workflow("daily.yml")["jobs"]
     recovery = load_workflow("resolve-delivery.yml")["jobs"]
     state_token = "${{ secrets.AI_DAILY_STATE_TOKEN }}"
-    assert state_token in str(daily["daily"])
-    assert state_token in str(recovery["resolve"])
     assert daily["daily"]["environment"] == "ai-daily-production"
     assert recovery["resolve"]["environment"] == "ai-daily-production"
 
-    allowed = {("daily.yml", "daily"), ("resolve-delivery.yml", "resolve")}
+    allowed_steps = {
+        ("daily.yml", "daily", "Push reserved intent"),
+        ("daily.yml", "daily", "Push unattempted cleanup"),
+        ("daily.yml", "daily", "Push accepted state"),
+        ("resolve-delivery.yml", "resolve", "Push resolved state"),
+    }
     for path in workflow_paths:
         for job_name, job in load_workflow(path.name).get("jobs", {}).items():
-            if (path.name, job_name) not in allowed:
-                assert "AI_DAILY_STATE_TOKEN" not in str(job)
-                assert state_token not in str(job)
+            for step in job["steps"]:
+                identity = (path.name, job_name, step.get("name", ""))
+                if identity in allowed_steps:
+                    assert step["env"] == {"AI_DAILY_STATE_TOKEN": state_token}
+                    assert step["run"] == "python scripts/push_production_state.py"
+                else:
+                    assert "AI_DAILY_STATE_TOKEN" not in str(step)
+                    assert state_token not in str(step)
 
 
-def test_production_checkouts_are_pinned_and_state_credentials_only_persist_for_git() -> None:
+def test_all_checkouts_use_read_token_without_persisted_credentials() -> None:
+    """Would catch a token-bearing git config surviving into untrusted code or later steps."""
+    for path in (ROOT / ".github" / "workflows").glob("*.yml"):
+        for job in load_workflow(path.name).get("jobs", {}).values():
+            for step in job["steps"]:
+                if "actions/checkout@" not in step.get("uses", ""):
+                    continue
+                assert step.get("with", {}).get("persist-credentials") is False
+                assert "token" not in step.get("with", {})
+
+
+def test_production_checkouts_are_pinned_and_state_credentials_are_ephemeral() -> None:
     """Would catch trusted code advancing to an unvalidated mutable default-branch tip."""
     daily = load_workflow("daily.yml")["jobs"]
     recovery = load_workflow("resolve-delivery.yml")["jobs"]
@@ -537,13 +590,6 @@ def test_production_checkouts_are_pinned_and_state_credentials_only_persist_for_
     assert preview_checkout["with"]["persist-credentials"] is False
     assert "token" not in preview_checkout["with"]
 
-    for job in (daily["daily"], recovery["resolve"]):
-        checkout = next(
-            step for step in job["steps"] if "actions/checkout@" in step.get("uses", "")
-        )
-        assert checkout["with"]["token"] == "${{ secrets.AI_DAILY_STATE_TOKEN }}"
-        assert checkout["with"]["persist-credentials"] is True
-
     for workflow_name in ("daily.yml", "resolve-delivery.yml"):
         workflow = load_workflow(workflow_name)
         for job in workflow["jobs"].values():
@@ -551,6 +597,7 @@ def test_production_checkouts_are_pinned_and_state_credentials_only_persist_for_
                 if "actions/upload-artifact@" in step.get("uses", "") or step.get("name") in {
                     "Run trusted cost preview",
                     "Run daily digest",
+                    "Run deterministic safe preview",
                 }:
                     assert "AI_DAILY_STATE_TOKEN" not in str(step)
 
@@ -572,7 +619,7 @@ def test_production_checkouts_are_pinned_and_state_credentials_only_persist_for_
             "daily",
             (
                 "ai-daily-request|mode=economy|send=false|force=true|"
-                "ref_type=branch|ref=refs/heads/main"
+                "ref=refs/heads/main"
             ),
             {"mode": "economy", "send": "false", "force": "true"},
         ),
@@ -581,7 +628,7 @@ def test_production_checkouts_are_pinned_and_state_credentials_only_persist_for_
             (
                 "ai-daily-resolve|date=2026-08-24|resolution=sent|"
                 "message_id=mailbox-confirmed-2026-08-24|confirm=true|"
-                "ref_type=branch|ref=refs/heads/main"
+                "ref=refs/heads/main"
             ),
             {
                 "date": "2026-08-24",
@@ -626,7 +673,7 @@ def test_trusted_request_parser_accepts_only_bounded_allowlisted_fields(
             "daily",
             (
                 "ai-daily-request|mode=full|send=true|force=false|"
-                "ref_type=tag|ref=refs/tags/main"
+                "ref=refs/tags/main"
             ),
         ),
         (
@@ -668,15 +715,19 @@ def test_manual_resolution_workflow_is_serialized_state_only_and_default_branch_
     """Would catch operator recovery racing delivery or mutating non-state paths."""
     request_workflow = load_workflow("resolve-delivery-request.yml")
     request_trigger = request_workflow[True]
-    assert set(request_trigger) == {"workflow_dispatch"}
+    assert request_trigger == {
+        "repository_dispatch": {"types": ["ai-daily-resolve"]}
+    }
     assert request_workflow["permissions"] == {"contents": "read"}
     assert "secrets." not in yaml.safe_dump(request_workflow, sort_keys=True)
     assert all(
         job.get("permissions") == {"contents": "read"} and "environment" not in job
         for job in request_workflow["jobs"].values()
     )
-    assert "ref_type=${{ github.ref_type }}" in request_workflow["run-name"]
-    assert "ref=${{ github.ref }}" in request_workflow["run-name"]
+    assert "ref=${{ github.event.client_payload.target_ref }}" in request_workflow["run-name"]
+    request_steps = request_workflow["jobs"]["record_request"]["steps"]
+    request_validation = next(step for step in request_steps if step.get("id") == "request")
+    assert request_validation["run"] == "python scripts/parse_repository_dispatch.py resolve"
 
     workflow = load_workflow("resolve-delivery.yml")
     trigger = workflow[True]
@@ -730,7 +781,9 @@ def test_manual_resolution_workflow_is_serialized_state_only_and_default_branch_
     assert "git add -A" not in state_commit["run"]
     assert "git push --force" not in state_commit["run"]
     assert "git pull" not in state_commit["run"]
-    assert 'git push origin HEAD:"refs/heads/${DEFAULT_BRANCH}"' in state_commit["run"]
+    assert "git push" not in state_commit["run"]
+    state_push = next(step for step in steps if step.get("name") == "Push resolved state")
+    assert steps.index(state_commit) < steps.index(state_push)
 
 
 def test_remote_default_is_verified_before_first_production_mutation() -> None:
@@ -755,6 +808,7 @@ def test_remote_default_is_verified_before_first_production_mutation() -> None:
     assert recovery_verify < recovery_mutate
     for steps, index in ((daily_steps, daily_verify), (resolve_steps, recovery_verify)):
         assert steps[index]["run"] == "python scripts/check_remote_default.py"
+        assert steps[index]["env"] == {"GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"}
 
 
 def test_manual_resolution_dispatch_accepts_only_retry_and_sent() -> None:
@@ -806,13 +860,16 @@ def test_daily_persists_durable_state_before_nonessential_artifact_upload() -> N
     commit_index = next(
         index for index, step in enumerate(steps) if step.get("name") == "Commit accepted state"
     )
+    push_index = next(
+        index for index, step in enumerate(steps) if step.get("name") == "Push accepted state"
+    )
     artifact_index = next(
         index
         for index, step in enumerate(steps)
         if step.get("uses") == "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
     )
 
-    assert run_index < commit_index < artifact_index
+    assert run_index < commit_index < push_index < artifact_index
     assert commit_index > run_index
     assert steps[artifact_index]["if"] == "always()"
 
@@ -827,13 +884,16 @@ def test_daily_commits_reservation_before_any_graph_capable_step() -> None:
     intent_commit_index = next(
         index for index, step in enumerate(steps) if step.get("name") == "Commit reserved intent"
     )
+    intent_push_index = next(
+        index for index, step in enumerate(steps) if step.get("name") == "Push reserved intent"
+    )
     digest_index = next(
         index for index, step in enumerate(steps) if step.get("name") == "Run daily digest"
     )
     reserve = steps[reserve_index]
     digest = steps[digest_index]
 
-    assert reserve_index < intent_commit_index < digest_index
+    assert reserve_index < intent_commit_index < intent_push_index < digest_index
     assert "github.run_id" in workflow["jobs"]["daily"]["env"]["AI_DAILY_ATTEMPT_ID"]
     assert "github.run_attempt" in workflow["jobs"]["daily"]["env"]["AI_DAILY_ATTEMPT_ID"]
     assert "--attempt-id" in reserve["run"]
@@ -848,10 +908,14 @@ def test_daily_cleanup_is_only_for_explicit_not_attempted_output() -> None:
     cleanup_commit = next(
         step for step in steps if step.get("name") == "Commit unattempted cleanup"
     )
+    cleanup_push = next(
+        step for step in steps if step.get("name") == "Push unattempted cleanup"
+    )
 
     assert "steps.digest.outputs.delivery_outcome == 'not_attempted'" in cleanup["if"]
     assert "always()" in cleanup["if"]
     assert "steps.cleanup.outcome == 'success'" in cleanup_commit["if"]
+    assert "steps.cleanup_commit.outcome == 'success'" in cleanup_push["if"]
     assert "release-delivery" in cleanup["run"]
 
 
@@ -862,15 +926,18 @@ def test_daily_final_commit_requires_successful_accepted_delivery() -> None:
 
     assert "steps.digest.outcome == 'success'" in final_commit["if"]
     assert "steps.digest.outputs.delivery_outcome == 'accepted'" in final_commit["if"]
-    assert "git push origin" in final_commit["run"]
+    assert "git push" not in final_commit["run"]
+    final_push = next(step for step in steps if step.get("name") == "Push accepted state")
+    assert "steps.digest.outputs.delivery_outcome == 'accepted'" in final_push["if"]
 
 
 def test_manual_source_validation_is_read_only_locked_and_pinned() -> None:
     """Would catch diagnostics gaining mail/state authority or mutable dependencies/actions."""
     workflow = load_workflow("validate-sources.yml")
     trigger = workflow[True]
-    assert set(trigger) == {"workflow_dispatch"}
-    assert trigger["workflow_dispatch"]["inputs"]["minimum_success"]["default"] == 80
+    assert trigger == {
+        "repository_dispatch": {"types": ["ai-daily-validate-sources"]}
+    }
     assert workflow["permissions"] == {"contents": "read"}
     steps = workflow["jobs"]["validate"]["steps"]
     assert [step["uses"] for step in steps if "uses" in step] == [
@@ -878,9 +945,11 @@ def test_manual_source_validation_is_read_only_locked_and_pinned() -> None:
         "actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38",
     ]
     commands = "\n".join(step.get("run", "") for step in steps)
+    request = next(step for step in steps if step.get("id") == "request")
+    assert request["run"] == "python scripts/parse_repository_dispatch.py sources"
     assert "pip install --requirement requirements-prod.lock" in commands
     assert "pip install --no-deps --no-build-isolation -e ." in commands
-    assert "validate-sources --minimum-success" in commands
+    assert 'validate-sources --minimum-success "${{ steps.request.outputs.minimum_success }}"' in commands
     assert "run --send" not in commands
     assert "git push" not in commands
     assert "secrets." not in commands

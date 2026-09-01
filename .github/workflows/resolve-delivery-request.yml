@@ -1,27 +1,9 @@
 name: Resolve AI Daily Delivery Request
-run-name: ai-daily-resolve|date=${{ inputs.date }}|resolution=${{ inputs.resolution }}|message_id=${{ inputs.message_id }}|confirm=${{ inputs.confirm_owner_terminal }}|ref_type=${{ github.ref_type }}|ref=${{ github.ref }}
+run-name: ai-daily-resolve|date=${{ github.event.client_payload.date }}|resolution=${{ github.event.client_payload.resolution }}|message_id=${{ github.event.client_payload.message_id }}|confirm=${{ github.event.client_payload.confirm }}|ref=${{ github.event.client_payload.target_ref }}
 
 on:
-  workflow_dispatch:
-    inputs:
-      date:
-        description: Beijing delivery date (YYYY-MM-DD)
-        type: string
-        required: true
-      resolution:
-        description: Mailbox-confirmed resolution
-        type: choice
-        options: [retry, sent]
-        required: true
-      message_id:
-        description: Safe local fingerprint (required only for sent)
-        type: string
-        required: false
-      confirm_owner_terminal:
-        description: I confirmed the owning delivery run is terminal
-        type: boolean
-        required: true
-        default: false
+  repository_dispatch:
+    types: [ai-daily-resolve]
 
 permissions:
   contents: read
@@ -32,5 +14,14 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate repository dispatch
+        id: request
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python scripts/parse_repository_dispatch.py resolve
       - name: Record read-only recovery request
         run: echo "Resolution request recorded for trusted default-branch processing."
