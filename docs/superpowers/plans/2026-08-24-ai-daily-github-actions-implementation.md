@@ -1,5 +1,8 @@
 # AI Daily News GitHub Actions Implementation Plan
 
+> [!IMPORTANT]
+> **The workflow authority steps in this dated plan are superseded and remain only as implementation history.** Do not execute passages that prescribe ref-selectable `workflow_dispatch`, persisted checkout write credentials, pull/rebase state writes, or inline built-in `GITHUB_TOKEN` pushes. The current sources of truth are `README.md` and `.github/workflows/`: default-branch `repository_dispatch` handles manual controls, `workflow_run` starts trusted production, every checkout uses the built-in read token with `persist-credentials: false`, and only individual push steps receive the `ai-daily-production` Environment's step-scoped `AI_DAILY_STATE_TOKEN`. The personal-account trust boundary treats same-repository writers as trusted with respect to the built-in token; untrusted contributions must use forks.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a private-repository Python application that gathers broad AI news and GitHub all-domain trending data, optionally summarizes it with DeepSeek, and sends one deduplicated Outlook daily email before 08:00 Asia/Shanghai.
@@ -1241,6 +1244,9 @@ git commit -m "feat: orchestrate resilient daily digest runs"
 ---
 
 ### Task 10: CLI, GitHub Actions, CI, and Acceptance Verification
+
+> [!WARNING]
+> Task 10's original workflow YAML and manual/write instructions are superseded. Preserve them as history only; use the repository's current README and checked-in workflows instead.
 
 **Files:**
 - Create: `src/ai_daily/cli.py`

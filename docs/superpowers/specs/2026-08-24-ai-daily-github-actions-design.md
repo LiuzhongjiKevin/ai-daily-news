@@ -4,6 +4,9 @@
 状态：已完成讨论，待用户书面审阅  
 目标版本：V1
 
+> [!IMPORTANT]
+> **工作流权限架构已被后续安全修订取代；本文仅保留为历史设计记录。** 下文凡提及可选择 ref 的 `workflow_dispatch`、checkout 持久化写凭据或内联 `GITHUB_TOKEN` 写仓库，均不得作为当前实现依据。当前权威来源是根目录 `README.md` 与已检入的 `.github/workflows/`：人工控制由默认分支 `repository_dispatch` 接收，受信生产由 `workflow_run` 启动，所有 checkout 使用内建只读 token 且 `persist-credentials: false`，写入只在绑定 `ai-daily-production` Environment 的独立 push step 中使用 step-scoped `AI_DAILY_STATE_TOKEN`。个人账户威胁模型把同仓库 Write 访问者视为对内建 `GITHUB_TOKEN` 受信；不受信贡献必须来自 fork。
+
 ## 1. 项目目标
 
 本项目每天自动采集国内外 AI 行业新闻和 GitHub 全领域热门项目，在北京时间 08:00 前通过 Outlook 个人邮箱发送一封中文日报。
@@ -209,6 +212,9 @@ DeepSeek 返回的实际 `usage` 字段是费用计算依据。每次运行记�
 - [DeepSeek Token 用量](https://api-docs.deepseek.com/quick_start/token_usage/)
 
 ## 8. 定时、状态和重复发送保护
+
+> [!WARNING]
+> 本节的手动入口与仓库写入描述是历史方案；请勿实现其中的 `workflow_dispatch`/内联 token 写入，改以文首所列 README 和当前 workflows 为准。
 
 GitHub Actions 提供三个入口：
 
