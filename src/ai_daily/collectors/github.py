@@ -228,32 +228,44 @@ class GitHubReleaseCollector:
         self.client = client
 
     def collect(self, source: SourceConfig, since: datetime) -> list[RawItem]:
-        response = self.client.get(self._releases_url(source), headers={"Accept": "application/vnd.github+json"})
+        response = self.client.get(
+            self._releases_url(source),
+            headers={"Accept": "application/vnd.github+json"},
+        )
         try:
             releases = response.json()
         except ValueError as exc:
             content_type = response.headers.get("content-type", "unknown").split(";", 1)[0]
             raise SourceParseError(f"invalid GitHub releases JSON content-type={content_type}") from exc
         if not isinstance(releases, list):
-            raise TypeError("GitHub releases response is not a list")
+            raise SourceParseError("GitHub releases response schema is invalid")
         cutoff = require_since_aware(since)
         rows: list[RawItem] = []
+        valid_rows = 0
         for release in releases:
-            if not isinstance(release, dict) or release.get("draft"):
+            if not isinstance(release, dict) or not isinstance(release.get("draft"), bool):
                 continue
             published_value = release.get("published_at") or release.get("created_at")
             url = release.get("html_url")
-            title = (release.get("name") or release.get("tag_name") or "").strip()
-            if not published_value or not url or not title:
+            name = release.get("name")
+            tag_name = release.get("tag_name")
+            title = (
+                name.strip()
+                if isinstance(name, str) and name.strip()
+                else tag_name.strip()
+                if isinstance(tag_name, str)
+                else ""
+            )
+            if (
+                not isinstance(published_value, (str, datetime))
+                or not isinstance(url, str)
+                or not title
+            ):
                 continue
             try:
                 published = parse_datetime(published_value)
-            except (TypeError, ValueError):
-                continue
-            if published < cutoff:
-                continue
-            rows.append(
-                RawItem(
+                body = release.get("body")
+                row = RawItem(
                     source_id=source.id,
                     source_name=source.name,
                     source_type=source.source_type,
@@ -263,14 +275,23 @@ class GitHubReleaseCollector:
                     excerpt=re.sub(
                         r"\s+([.,;:!?])",
                         r"\1",
-                        BeautifulSoup(release.get("body") or "", "html.parser").get_text(
+                        BeautifulSoup(body if isinstance(body, str) else "", "html.parser").get_text(
                             " ", strip=True
                         ),
                     ),
                     language=source.language,
                     category=source.category,
                 )
-            )
+            except (TypeError, ValueError):
+                continue
+            valid_rows += 1
+            if release["draft"]:
+                continue
+            if published < cutoff:
+                continue
+            rows.append(row)
+        if releases and valid_rows == 0:
+            raise SourceParseError("GitHub releases response schema is invalid")
         return rows
 
     @staticmethod

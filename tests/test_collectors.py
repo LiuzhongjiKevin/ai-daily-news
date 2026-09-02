@@ -374,6 +374,140 @@ def test_github_release_collector_maps_api_releases(http_client: FixtureClient) 
     assert items[0].published_at == datetime(2026, 8, 24, 10, 0, tzinfo=UTC)
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"unexpected": "private-provider-content"},
+        ["private-provider-content"],
+        [
+            {
+                "draft": False,
+                "name": "private-provider-content",
+                "published_at": "2026-08-24T10:00:00Z",
+            }
+        ],
+        [
+            {
+                "draft": False,
+                "name": "private-provider-content",
+                "html_url": "https://github.com/acme/widget/releases/tag/private",
+                "published_at": "not-a-private-provider-date",
+            }
+        ],
+        [
+            {
+                "draft": False,
+                "name": "private-provider-content",
+                "html_url": "private-provider-url",
+                "published_at": "2026-08-24T10:00:00Z",
+            }
+        ],
+        [
+            {
+                "draft": "private-provider-content",
+                "name": "v2.0.0",
+                "html_url": "https://github.com/acme/widget/releases/tag/v2.0.0",
+                "published_at": "2026-08-24T10:00:00Z",
+            }
+        ],
+    ],
+)
+def test_github_release_collector_rejects_payload_without_a_valid_release_shape(
+    payload: object,
+) -> None:
+    """Would catch a malformed non-empty API response being reported as a quiet source."""
+    url = "https://api.github.com/repos/acme/widget/releases"
+    client = FixtureClient({url: json.dumps(payload).encode()})
+    source = SourceConfig(
+        id="widget",
+        name="Acme Widget",
+        kind="github_releases",
+        source_type="release",
+        url=url,
+        language="en",
+        category="open-source",
+    )
+
+    with pytest.raises(
+        SourceParseError,
+        match="^GitHub releases response schema is invalid$",
+    ) as error:
+        GitHubReleaseCollector(client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
+
+    assert "private-provider" not in str(error.value)
+    assert url not in str(error.value)
+
+
+def test_github_release_collector_keeps_valid_rows_from_a_mixed_payload() -> None:
+    """Would catch one malformed row poisoning a concurrently returned valid release."""
+    url = "https://api.github.com/repos/acme/widget/releases"
+    payload = [
+        "private-provider-content",
+        {
+            "draft": False,
+            "name": "v2.1.0",
+            "tag_name": "v2.1.0",
+            "html_url": "https://github.com/acme/widget/releases/tag/v2.1.0",
+            "published_at": "2026-08-24T11:00:00Z",
+            "body": "A valid release.",
+        },
+    ]
+    client = FixtureClient({url: json.dumps(payload).encode()})
+    source = SourceConfig(
+        id="widget",
+        name="Acme Widget",
+        kind="github_releases",
+        source_type="release",
+        url=url,
+        language="en",
+        category="open-source",
+    )
+
+    items = GitHubReleaseCollector(client).collect(
+        source, datetime(2026, 8, 23, tzinfo=UTC)
+    )
+
+    assert [item.title for item in items] == ["v2.1.0"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        [
+            {
+                "draft": True,
+                "name": "Unpublished v3",
+                "tag_name": "v3.0.0",
+                "html_url": "https://github.com/acme/widget/releases/tag/v3.0.0",
+                "published_at": None,
+                "created_at": "2026-08-24T12:00:00Z",
+                "body": None,
+            }
+        ],
+    ],
+)
+def test_github_release_collector_accepts_true_empty_and_valid_draft_only_payloads(
+    payload: object,
+) -> None:
+    """Would catch a real empty result or structurally valid draft being failed closed."""
+    url = "https://api.github.com/repos/acme/widget/releases"
+    client = FixtureClient({url: json.dumps(payload).encode()})
+    source = SourceConfig(
+        id="widget",
+        name="Acme Widget",
+        kind="github_releases",
+        source_type="release",
+        url=url,
+        language="en",
+        category="open-source",
+    )
+
+    assert GitHubReleaseCollector(client).collect(
+        source, datetime(2026, 8, 23, tzinfo=UTC)
+    ) == []
+
+
 def test_discovery_collector_filters_every_result_not_in_the_domain_allowlist(
     http_client: FixtureClient,
 ) -> None:

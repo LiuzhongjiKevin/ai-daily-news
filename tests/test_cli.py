@@ -278,6 +278,101 @@ def test_validate_sources_keeps_valid_empty_and_malformed_schema_distinct(
     )
 
 
+def test_release_validation_fails_malformed_nonempty_without_penalizing_valid_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Would catch malformed releases consuming a healthy-empty validation slot."""
+    from ai_daily.cli import main, validate_sources
+    from ai_daily.collectors.base import SourceConfig
+
+    sources = [
+        SourceConfig(
+            id=source_id,
+            name=source_id,
+            kind="github_releases",
+            source_type="release",
+            url=f"https://api.github.com/repos/acme/{source_id}/releases",
+            language="en",
+            category="open_source",
+        )
+        for source_id in ("true-empty", "valid-draft", "mixed-partial", "malformed")
+    ]
+    payloads: dict[str, object] = {
+        "true-empty": [],
+        "valid-draft": [
+            {
+                "draft": True,
+                "name": "private-provider-draft",
+                "tag_name": "v3.0.0",
+                "html_url": "https://github.com/acme/valid-draft/releases/tag/v3.0.0",
+                "published_at": None,
+                "created_at": "2099-08-24T12:00:00Z",
+                "body": None,
+            }
+        ],
+        "mixed-partial": [
+            "private-provider-content",
+            {
+                "draft": False,
+                "name": "v2.1.0",
+                "tag_name": "v2.1.0",
+                "html_url": "https://github.com/acme/mixed-partial/releases/tag/v2.1.0",
+                "published_at": "2099-08-24T11:00:00Z",
+                "body": "Valid.",
+            },
+        ],
+        "malformed": [
+            {
+                "draft": False,
+                "name": "private-provider-content",
+                "html_url": "private-provider-url",
+                "published_at": "private-provider-date",
+            }
+        ],
+    }
+
+    class OfflineClient:
+        def get(self, url: str, **_: object) -> httpx.Response:
+            repository = url.split("/repos/acme/", 1)[1].split("/", 1)[0]
+            return httpx.Response(
+                200,
+                json=payloads[repository],
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr("ai_daily.cli.project_root", lambda: tmp_path)
+    monkeypatch.setattr("ai_daily.cli._load_sources", lambda _: sources)
+    monkeypatch.setattr("ai_daily.cli.RetryingClient", lambda **_: OfflineClient())
+
+    outcomes = validate_sources()
+
+    assert outcomes[:3] == [
+        ("true-empty", "healthy_empty"),
+        ("valid-draft", "healthy_empty"),
+        ("mixed-partial", None),
+    ]
+    assert outcomes[3][0] == "malformed"
+    assert outcomes[3][1] and outcomes[3][1].startswith(
+        "SourceParseError: GitHub releases response schema is invalid"
+    )
+    assert "private-provider" not in outcomes[3][1]
+
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr("ai_daily.cli.validate_sources", lambda: outcomes)
+    assert main(["validate-sources", "--minimum-success", "75"]) == 0
+    output = capsys.readouterr().out
+    summary_text = summary.read_text(encoding="utf-8")
+    assert "3/4 (75.0%)" in output
+    assert "Successful: 1" in summary_text
+    assert "Healthy empty: 2" in summary_text
+    assert "Failed: 1" in summary_text
+    assert "private-provider" not in summary_text
+    assert main(["validate-sources", "--minimum-success", "76"]) == 1
+
+
 def test_cli_reports_already_sent_without_recipient_details(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
