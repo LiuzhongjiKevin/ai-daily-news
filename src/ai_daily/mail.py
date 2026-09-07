@@ -237,7 +237,10 @@ class QQMailer:
 
     def __init__(self, sender: str, password: str, recipient: str) -> None:
         self.sender = GraphMailer._address(sender)
-        self.recipient = GraphMailer._address(recipient)
+        self.recipients = list(dict.fromkeys(
+            GraphMailer._address(address.strip()) for address in recipient.split(",")
+        ))
+        self.recipient = ", ".join(self.recipients)
         if sender.rsplit("@", 1)[1].lower() not in {"qq.com", "foxmail.com"}:
             raise MailAuthError("QQ sender must use qq.com or foxmail.com")
         if not password or any(character.isspace() for character in password):
@@ -247,8 +250,10 @@ class QQMailer:
     @classmethod
     def from_environment(cls) -> "QQMailer":
         try:
-            return cls(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"],
-                       os.environ["MAIL_TO"])
+            sender = os.environ["SMTP_USERNAME"]
+            # The owner receives every digest in both Outlook and the sending QQ mailbox.
+            return cls(sender, os.environ["SMTP_PASSWORD"],
+                       os.environ["MAIL_TO"] + "," + sender)
         except KeyError:
             raise MailAuthError("QQ mail configuration is unavailable") from None
 
@@ -261,9 +266,9 @@ class QQMailer:
                 "smtp.qq.com", 465, timeout=30, context=ssl.create_default_context()
             )
             connection.login(self.sender, self.password)
-            refused = connection.sendmail(self.sender, [self.recipient], payload)
+            refused = connection.sendmail(self.sender, self.recipients, payload)
             if refused:
-                raise MailSendError("QQ SMTP refused the recipient")
+                raise MailSendError("QQ SMTP refused one or more recipients; do not auto-retry")
         except smtplib.SMTPAuthenticationError:
             raise MailAuthError("QQ login failed; check the SMTP authorization code") from None
         except (OSError, smtplib.SMTPException):

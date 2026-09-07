@@ -73,6 +73,18 @@ def test_qq_cli_requires_only_smtp_secrets(monkeypatch, smtp, tmp_path):
     monkeypatch.setenv("MAIL_TO", "reader@outlook.com")
     assert required_send_secret_names("off") == ("SMTP_USERNAME", "SMTP_PASSWORD", "MAIL_TO")
     assert _LazyMailer(tmp_path / "absent.enc").send(digest()).startswith("accepted-")
+    assert smtp[1].sendmail.call_args.args[1] == ["reader@outlook.com", "sender@qq.com"]
+
+
+def test_duplicate_recipients_only_receive_once(smtp):
+    QQMailer("sender@qq.com", "secret", "sender@qq.com, sender@qq.com").send(digest())
+    assert smtp[1].sendmail.call_args.args[1] == ["sender@qq.com"]
+
+
+def test_all_recipient_addresses_are_validated(smtp):
+    with pytest.raises(MailSendError):
+        QQMailer("sender@qq.com", "secret", "reader@outlook.com, bad\r\nBcc: other@qq.com")
+    smtp[0].assert_not_called()
 
 
 def test_qq_cleanup_failure_does_not_undo_acceptance(smtp):

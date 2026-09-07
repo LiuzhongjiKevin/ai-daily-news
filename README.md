@@ -4,6 +4,10 @@
 
 ## QQ 邮箱快速配置（当前推荐）
 
+每次 QQ 投递都会同时发给 `MAIL_TO` 和 `SMTP_USERNAME`，重复地址只发送一次。SMTP 部分拒收时保留失败，不自动重发，以免已接受的地址收到重复邮件。
+
+`repository_dispatch` 事件 `ai-daily-send-once` 可采集并发送一次真实的零 AI 成本日报，使用 runner 本地投递状态，并将预览、日报和状态保留为 7 天 Artifact。该人工入口不写回仓库，也不替代正式定时流程的跨运行去重；不要盲目重跑或与当天正式投递重复触发。`ai-daily-test-mail` 则只发送连通性测试。
+
 1. 登录 QQ 邮箱网页版，在设置中找到 POP3/IMAP/SMTP 服务，开启包含 SMTP 的服务，按提示验证并获取授权码。
 2. 打开 GitHub 仓库的 **Settings → Environments → ai-daily-production → Environment secrets**，添加 `SMTP_USERNAME`（完整 QQ 邮箱地址）和 `SMTP_PASSWORD`（授权码，非 QQ 登录密码），保留 `MAIL_TO`（收件地址）。服务器、465 端口和 TLS 验证已经内置。
 3. 本地运行时设置 `MAIL_PROVIDER=qq`；Actions 已固定此值。不要将 `.env` 或授权码提交到公开仓库。下方微软注册、密钥和缓存步骤仅属于旧 Graph 方案，QQ 方案全部跳过。

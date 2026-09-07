@@ -2,7 +2,7 @@ name: Test QQ Email
 
 on:
   repository_dispatch:
-    types: [ai-daily-test-mail]
+    types: [ai-daily-test-mail, ai-daily-send-once]
 
 permissions:
   contents: read
@@ -16,7 +16,7 @@ jobs:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     environment: ai-daily-production
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -28,8 +28,27 @@ jobs:
       - run: python -m pip install --requirement requirements-prod.lock
       - run: python -m pip install --no-deps --no-build-isolation -e .
       - name: Send one labelled test email
+        if: github.event.action == 'ai-daily-test-mail'
         env:
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
         run: python scripts/test_qq_delivery.py
+      - name: Collect and send one real digest to both inboxes
+        if: github.event.action == 'ai-daily-send-once'
+        env:
+          MAIL_PROVIDER: qq
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ai-daily run --send --ai-mode off
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always() && github.event.action == 'ai-daily-send-once'
+        with:
+          name: one-off-digest-and-delivery-state
+          path: |
+            preview/
+            digests/
+            data/state.json
+          retention-days: 7
