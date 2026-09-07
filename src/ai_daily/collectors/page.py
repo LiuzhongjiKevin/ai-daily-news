@@ -94,7 +94,39 @@ class PageCollector:
             card.append(link)
             output.append(card)
 
-        if page_format == "glm_updates":
+        if page_format in {"minimax_news", "sensetime_news", "mistral_news", "databricks_news"}:
+            paths = {
+                "minimax_news": "/blog/", "sensetime_news": "/cn/news/",
+                "mistral_news": "/news/", "databricks_news": "/blog/",
+            }
+            for link in document.select("a[href]"):
+                if not urlparse(link["href"]).path.startswith(paths[page_format]):
+                    continue
+                title_node = link.select_one("strong" if page_format == "sensetime_news"
+                                             else "h2, h3, h4")
+                date_node = link.select_one("time")
+                stamp = (date_node.get("datetime") or date_node.get_text(" ", strip=True)
+                         if date_node else "")
+                if not stamp and page_format in {"minimax_news", "mistral_news"}:
+                    pattern = (r"\b\d{4}-\d{2}-\d{2}\b" if page_format == "minimax_news"
+                               else r"\b[A-Z][a-z]+ \d{1,2}, \d{4}\b")
+                    match = re.search(pattern, link.get_text(" ", strip=True))
+                    stamp = match[0] if match else ""
+                if title_node and stamp:
+                    excerpt = link.select_one("p")
+                    add(title_node.get_text(" ", strip=True), stamp, link["href"],
+                        excerpt.get_text(" ", strip=True) if excerpt else "")
+        elif page_format == "stability_news":
+            # Squarespace also wraps the entire list in an article: only use leaf cards.
+            for card in document.select("article"):
+                if card.select_one("article"):
+                    continue
+                title = card.select_one("h1 a[href], h2 a[href], h3 a[href]")
+                date_node = card.select_one("time")
+                if title and date_node:
+                    stamp = date_node.get("datetime") or date_node.get_text(" ", strip=True)
+                    add(title.get_text(" ", strip=True), stamp, title["href"])
+        elif page_format == "glm_updates":
             for card in document.select(".update-container[id]"):
                 stamp = card.get("id", "")
                 if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", stamp):

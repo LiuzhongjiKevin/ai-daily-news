@@ -38,7 +38,10 @@ class SourceConfig(BaseModel):
     language: Literal["zh", "en", "other"]
     category: str
     enabled: bool = True
-    page_format: Literal["standard", "glm_updates", "deepseek_updates", "anthropic_news"] = "standard"
+    page_format: Literal[
+        "standard", "glm_updates", "deepseek_updates", "anthropic_news",
+        "minimax_news", "sensetime_news", "mistral_news", "databricks_news", "stability_news",
+    ] = "standard"
     item_selector: str | None = None
     title_selector: str | None = None
     link_selector: str | None = None
