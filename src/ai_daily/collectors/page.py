@@ -62,6 +62,8 @@ class PageCollector:
         if _origin(str(response.url)) != _origin(str(source.url)):
             raise PageParseError("page final response origin is not allowed")
         document = BeautifulSoup(response.content, "html.parser")
+        if source.page_format != "standard":
+            document = self._normalize_updates(document, source.page_format)
         cutoff = require_since_aware(since)
         cards = document.select(source.item_selector)
         if not cards:
@@ -73,8 +75,59 @@ class PageCollector:
                 parsed_cards.append(parsed)
         if not parsed_cards:
             raise PageParseError(f"page selector mismatch: matched {len(cards)} cards but parsed 0")
-        rows = [item for item in parsed_cards if item.published_at >= cutoff]
+        rows = list({str(item.canonical_url): item for item in parsed_cards
+                     if item.published_at >= cutoff}.values())
         return rows
+
+    @staticmethod
+    def _normalize_updates(document: BeautifulSoup, page_format: str) -> BeautifulSoup:
+        """Adapt verified publisher layouts, retaining their explicit dates and permalinks."""
+        output = BeautifulSoup("", "html.parser")
+
+        def add(title: str, timestamp: str, href: str, excerpt: str = "") -> None:
+            card = output.new_tag("article")
+            for tag, value in (("h2", title), ("time", timestamp), ("p", excerpt)):
+                node = output.new_tag(tag)
+                node.string = value.replace("\u200b", "").strip()
+                card.append(node)
+            link = output.new_tag("a", href=href)
+            card.append(link)
+            output.append(card)
+
+        if page_format == "glm_updates":
+            for card in document.select(".update-container[id]"):
+                stamp = card.get("id", "")
+                if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", stamp):
+                    continue
+                parts = [s.strip("\u200b ") for s in card.stripped_strings]
+                parts = [s for s in parts if s and s != stamp]
+                if parts:
+                    add(parts[0], stamp, "#" + stamp, " ".join(parts[1:])[:2000])
+        elif page_format == "deepseek_updates":
+            for heading in document.select("article h2[id]"):
+                stamp = re.search(r"\b\d{4}-\d{2}-\d{2}\b", heading.get_text())
+                if not stamp:
+                    continue
+                # Bound each date section to avoid assigning the next release's title/date.
+                for sibling in heading.next_siblings:
+                    if not isinstance(sibling, Tag):
+                        continue
+                    if sibling.name == "h2":
+                        break
+                    if sibling.name == "h3" and sibling.get("id"):
+                        add(sibling.get_text(" ", strip=True), stamp[0], "#" + sibling["id"])
+        elif page_format == "anthropic_news":
+            for link in document.select('a[href^="/news/"]'):
+                text = link.get_text(" ", strip=True)
+                stamp = re.search(r"\b[A-Z][a-z]{2} \d{1,2}, \d{4}\b", text)
+                if not stamp:
+                    continue
+                title_node = link.select_one("h2, h3, h4")
+                title = title_node.get_text(" ", strip=True) if title_node else text.replace(stamp[0], "")
+                title = re.sub(r"^\s*(Announcements|Product|Policy|Research)\s+", "", title).strip()
+                if title:
+                    add(title, stamp[0], link["href"])
+        return output
 
     @staticmethod
     def _parse_item(item: Tag, source: SourceConfig, link_path_pattern: re.Pattern[str]) -> RawItem | None:
