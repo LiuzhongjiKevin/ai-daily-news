@@ -981,7 +981,7 @@ def test_manual_source_validation_is_read_only_locked_and_pinned() -> None:
 
 def test_operator_guide_contains_private_outlook_and_safety_invariants() -> None:
     """Would catch the handoff omitting secret handling, cost review, or delivery limitations."""
-    guide = (ROOT / "README.md").read_text(encoding="utf-8")
+    guide = (ROOT / "docs" / "maintenance.md").read_text(encoding="utf-8")
     for phrase in (
         "私有仓库",
         "MS_TOKEN_KEY",
@@ -1010,7 +1010,7 @@ def test_operator_guide_contains_private_outlook_and_safety_invariants() -> None
 
 def test_operator_guide_defines_personal_same_repository_writer_trust_boundary() -> None:
     """Would catch preview isolation being overstated as a sandbox for repository writers."""
-    guide = (ROOT / "README.md").read_text(encoding="utf-8")
+    guide = (ROOT / "docs" / "maintenance.md").read_text(encoding="utf-8")
 
     for phrase in (
         "个人账户/单一受信维护者",
@@ -1036,7 +1036,7 @@ def test_operator_guide_defines_personal_same_repository_writer_trust_boundary()
 
 def test_operator_guide_requires_serialized_terminal_owner_recovery() -> None:
     """Would catch docs telling an operator to clear intent while its owner can still send."""
-    guide = (ROOT / "README.md").read_text(encoding="utf-8")
+    guide = (ROOT / "docs" / "maintenance.md").read_text(encoding="utf-8")
 
     assert "Resolve AI Daily Delivery" in guide
     assert "ai-daily-delivery" in guide
