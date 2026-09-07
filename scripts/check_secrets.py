@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 
 SECRET_NAMES = (
+    "SMTP_USERNAME",
+    "SMTP_PASSWORD",
     "DEEPSEEK_API_KEY",
     "MS_CLIENT_ID",
     "MS_TOKEN_KEY",

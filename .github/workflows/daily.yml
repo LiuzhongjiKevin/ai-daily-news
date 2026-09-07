@@ -164,6 +164,9 @@ jobs:
           steps.reserve.outputs.reservation_status == 'already_sent')
         env:
           MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
+          MAIL_PROVIDER: qq
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MS_TOKEN_KEY: ${{ secrets.MS_TOKEN_KEY }}
           OUTLOOK_SENDER: ${{ secrets.OUTLOOK_SENDER }}
           MAIL_TO: ${{ secrets.MAIL_TO }}

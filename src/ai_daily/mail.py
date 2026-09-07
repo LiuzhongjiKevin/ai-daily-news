@@ -4,6 +4,8 @@ import base64
 import hashlib
 import os
 import re
+import smtplib
+import ssl
 import tempfile
 from collections.abc import Callable, Mapping
 from datetime import date
@@ -223,4 +225,54 @@ class GraphMailer:
             raise MailSendError(
                 f"Microsoft Graph did not accept the mail submission (HTTP {response.status_code})"
             )
+        return fingerprint
+
+
+class QQMailer:
+    """Send through QQ's TLS SMTP service using a revocable authorization code."""
+
+    _validated_subject = staticmethod(GraphMailer._validated_subject)
+    _mime_message = GraphMailer._mime_message
+    _message_fingerprint = GraphMailer._message_fingerprint
+
+    def __init__(self, sender: str, password: str, recipient: str) -> None:
+        self.sender = GraphMailer._address(sender)
+        self.recipient = GraphMailer._address(recipient)
+        if sender.rsplit("@", 1)[1].lower() not in {"qq.com", "foxmail.com"}:
+            raise MailAuthError("QQ sender must use qq.com or foxmail.com")
+        if not password or any(character.isspace() for character in password):
+            raise MailAuthError("QQ authorization code is unavailable or invalid")
+        self.password = password
+
+    @classmethod
+    def from_environment(cls) -> "QQMailer":
+        try:
+            return cls(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"],
+                       os.environ["MAIL_TO"])
+        except KeyError:
+            raise MailAuthError("QQ mail configuration is unavailable") from None
+
+    def send(self, rendered: RenderedDigest) -> str:
+        fingerprint = self._message_fingerprint(rendered)
+        payload = self._mime_message(rendered)
+        connection = None
+        try:
+            connection = smtplib.SMTP_SSL(
+                "smtp.qq.com", 465, timeout=30, context=ssl.create_default_context()
+            )
+            connection.login(self.sender, self.password)
+            refused = connection.sendmail(self.sender, [self.recipient], payload)
+            if refused:
+                raise MailSendError("QQ SMTP refused the recipient")
+        except smtplib.SMTPAuthenticationError:
+            raise MailAuthError("QQ login failed; check the SMTP authorization code") from None
+        except (OSError, smtplib.SMTPException):
+            raise MailSendError("QQ SMTP mail submission failed") from None
+        finally:
+            if connection is not None:
+                # DATA acceptance is authoritative; a failed QUIT must not trigger a resend.
+                try:
+                    connection.close()
+                except OSError:
+                    pass
         return fingerprint

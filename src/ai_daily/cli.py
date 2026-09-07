@@ -21,7 +21,7 @@ from ai_daily.collectors import build_collector_registry, load_sources
 from ai_daily.collectors.base import SourceConfig, format_source_failure
 from ai_daily.config import AppSettings, load_prices, load_settings
 from ai_daily.http import RetryingClient
-from ai_daily.mail import GraphMailer, MailAuthError, MailSendError
+from ai_daily.mail import GraphMailer, MailAuthError, MailSendError, QQMailer
 from ai_daily.pipeline import (
     DailyPipeline,
     DeliveryNoSendError,
@@ -37,6 +37,8 @@ _SEND_SECRETS = ("MS_CLIENT_ID", "MS_TOKEN_KEY", "OUTLOOK_SENDER", "MAIL_TO")
 _SUMMARY_SECRET_NAMES = (
     "DEEPSEEK_API_KEY",
     *_SEND_SECRETS,
+    "SMTP_USERNAME",
+    "SMTP_PASSWORD",
     "GITHUB_TOKEN",
     "AI_DAILY_STATE_TOKEN",
 )
@@ -84,6 +86,8 @@ class _LazyMailer:
         self.cache_path = cache_path
 
     def send(self, rendered: object) -> str:
+        if os.environ.get("MAIL_PROVIDER", "graph") == "qq":
+            return QQMailer.from_environment().send(rendered)  # type: ignore[arg-type]
         return GraphMailer.from_environment(self.cache_path).send(rendered)  # type: ignore[arg-type]
 
 
@@ -120,6 +124,8 @@ def _load_sources(root: Path) -> list[SourceConfig]:
 def required_send_secret_names(mode: str) -> tuple[str, ...]:
     """Return names only, never secret values, for one explicit delivery request."""
     del mode
+    if os.environ.get("MAIL_PROVIDER", "graph") == "qq":
+        return ("SMTP_USERNAME", "SMTP_PASSWORD", "MAIL_TO")
     return _SEND_SECRETS
 
 

@@ -501,6 +501,9 @@ def test_trusted_cost_preview_and_delivery_have_disjoint_authority() -> None:
     assert "ai-daily preview" in preview_run["run"]
     assert "--send" not in preview_run["run"]
     assert set(delivery_run["env"]) == {
+        "MAIL_PROVIDER",
+        "SMTP_USERNAME",
+        "SMTP_PASSWORD",
         "MS_CLIENT_ID",
         "MS_TOKEN_KEY",
         "OUTLOOK_SENDER",
@@ -984,7 +987,7 @@ def test_operator_guide_contains_private_outlook_and_safety_invariants() -> None
         "MS_TOKEN_KEY",
         "AI_DAILY_STATE_TOKEN",
         "GITHUB_TOKEN",
-        "仅表示 Microsoft Graph 已接受/排队",
+        "仅表示邮件服务器已接受提交",
         "零模型成本",
         "撤销",
         "轮换",

@@ -1,8 +1,17 @@
 # AI 新闻日报
 
-这是一个面向个人 Outlook 账户的私有仓库自动化：采集已配置的 AI 新闻与 GitHub 热门项目，生成中文日报，并可通过 Microsoft Graph 提交邮件。当前首次交付固定以确定性的 `off` 模式上线，不调用 DeepSeek、没有模型费用，也不要求配置 `DEEPSEEK_API_KEY`；AI 实现保留但暂不启用。默认不应把它当成“已交付确认”：本地记录的消息 ID **仅表示 Microsoft Graph 已接受/排队**，不能证明收件箱已经送达。
+采集已配置的 AI 新闻与 GitHub 热门项目，生成中文日报。当前 Actions 使用 QQ 邮箱 SMTP 发信，收件人可以使用 Outlook 或其他邮箱。首次交付固定为 `off` 模式，不调用模型，也不需要 AI 密钥。消息 ID 仅表示邮件服务器已接受提交，最终送达需检查收件箱。
 
-## 上线前准备
+## QQ 邮箱快速配置（当前推荐）
+
+1. 登录 QQ 邮箱网页版，在设置中找到 POP3/IMAP/SMTP 服务，开启包含 SMTP 的服务，按提示验证并获取授权码。
+2. 打开 GitHub 仓库的 **Settings → Environments → ai-daily-production → Environment secrets**，添加 `SMTP_USERNAME`（完整 QQ 邮箱地址）和 `SMTP_PASSWORD`（授权码，非 QQ 登录密码），保留 `MAIL_TO`（收件地址）。服务器、465 端口和 TLS 验证已经内置。
+3. 本地运行时设置 `MAIL_PROVIDER=qq`；Actions 已固定此值。不要将 `.env` 或授权码提交到公开仓库。下方微软注册、密钥和缓存步骤仅属于旧 Graph 方案，QQ 方案全部跳过。
+4. 原有生产流程仍需要独立的 `AI_DAILY_STATE_TOKEN` 保存防重复投递状态；它不是邮箱凭据。沿用下方首次运行顺序，保持 `mode=off`，先预览再发送。首次收件验证完成前保持定时开关关闭。
+
+QQ 授权码失效时只需更新 `SMTP_PASSWORD`，无需 Azure、客户端 ID 或微软加密缓存。下文投递状态中的“Graph 接受”对于 QQ 表示 SMTP DATA 被接受，同样不保证最终送达。
+
+## 仓库准备与旧 Microsoft Graph 配置参考
 
 1. 创建**私有仓库**并推送此项目。确定唯一默认分支（以下以 `main` 为例），启用分支保护，至少禁止直接绕过审阅修改生产工作流。然后在 **Settings → Actions → General → Workflow permissions** 中把默认权限设为 **Read repository contents and packages**，并关闭 “Allow GitHub Actions to create and approve pull requests”，作为纵深防御。这个仓库设置只是新工作流的默认权限，不是不可突破的权限上限：工作流仍可能显式申请更高权限。所有人工控制都通过只从默认分支读取工作流定义的 `repository_dispatch` 进入，并且每个 job/step 继续显式最小授权；这保护已批准的人工控制路径，但不是对同仓库写入者的通用沙箱。`GITHUB_TOKEN` 由 GitHub Actions 内建提供，无须建立为自定义 Secret。
 2. 在 **Settings → Environments** 创建 `ai-daily-production`。在它的 **Deployment branches and tags** 中只允许受保护的默认分支：优先选择 “Selected branches and tags” 并只加入精确的 `main` 分支，不加入 tag 或通配分支；同时启用所需审批/保护规则。生产任务还会校验事件类型、仓库、完整默认分支 ref、branch 类型、大小写和触发 SHA，但 Environment 分支策略仍是必须的第二道边界。
