@@ -1,0 +1,26 @@
+name: X Sources Isolated Probe
+
+on:
+  push:
+    branches: [test/x-sources]
+    paths:
+      - scripts/probe_x_sources.py
+      - .github/workflows/x-source-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements-prod.lock
+      - name: Read four public timelines (no login, mail, or state writes)
+        run: python scripts/probe_x_sources.py
