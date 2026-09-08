@@ -1,28 +1,121 @@
 # AI 新闻日报
 
-把 AI 新闻和 GitHub 热门项目整理成一封邮件，在邮箱里查看当天值得关注的内容。
+用 GitHub Actions 自动收集 AI 新闻和全领域 GitHub 热门项目，通过 QQ 邮箱发送日报。每份邮件同时发到 QQ 发件邮箱和指定的另一收件邮箱。当前不调用 AI，无模型费用；部分来源仍在完善。
 
-使用 GitHub Actions 运行，无需一直开着电脑。通过 QQ 邮箱发送，同一份日报会同时送到你的 QQ 邮箱和指定的另一个邮箱，例如 Outlook。
+## 部署前准备
 
-## 你会收到什么
+准备一个 GitHub 账户、一个可用的 QQ 邮箱，以及另一个收件邮箱（例如 Outlook）。下面所有仓库设置都在**你自己的仓库**中操作。
 
-- **AI 新闻**：模型更新、产品发布、公司动态等，附原文链接。
-- **GitHub 热门项目**：全领域最多 10 个项目，不限于 AI 项目。
-- **数据提示**：榜单是否使用了历史数据等必要说明；单个来源的抓取报错不在邮件中展示。
+## 第一步：复制项目并启用 Actions
 
-当前版本不调用 AI，没有模型费用。新闻通过规则筛选，最多保留 12 条；不足时按实际数量展示，不凑数。外文标题和摘要可能保留原文。
+1. 点击本项目右上角 **Fork**，复制到自己的 GitHub 账户。
+2. 打开复制后的仓库，进入 **Actions**，按页面提示启用工作流。
+3. 在 **Settings → General → Default branch** 查看默认分支名称，记下是 `master`、`main` 还是其他名称，后面会用到。
+4. 进入 **Settings → Actions → General → Workflow permissions**，选择 **Read repository contents and packages** 并保存。正式发送时的记录写入由下一步创建的专用令牌负责。
 
-## 当前可用情况
+仓库可以公开，但密码、授权码和令牌只填写在 Secrets 中，不要提交进代码。不要向不受信任的人开放仓库写入权限。
 
-已验证 QQ 发信和真实日报发送，支持 QQ 与另一个邮箱同时收件。
+## 第二步：获取 QQ 邮箱授权码
 
-已修复并在本机真实验证 Kimi 研究博客、GLM 更新日志、DeepSeek 更新日志、Qwen 旧博客和 Anthropic 新闻的读取。没有近期更新时不会把历史文章当作今日新闻；Qwen 旧博客内容较旧，新渠道仍待验证。
+按 [QQ 邮箱官方 SMTP 开启教程](https://help.mail.qq.com/detail/0/1087) 开启服务并获取授权码。
 
-第二批已修复 MiniMax、商汤、Mistral、Stability 和 Databricks。其中 Stability 与 Databricks 已更新到迁移后的栏目地址。五个来源均通过本机真实抓取验证；这不代表全部来源已经恢复，也不保证之后每次访问都成功。
+这是发信程序使用的授权码，**不是 QQ 登录密码**。收件邮箱不需要提供密码，也不需要登录 Azure。
 
-目前仍在完善来源覆盖：GLM 旧博客地址及其他部分网站仍有访问或解析问题，因此不能保证收录当天所有重要消息。GitHub 周增长排名需要积累历史数据，初次使用时请留意邮件内的榜单说明。
+## 第三步：获取 GitHub 令牌
 
-**自动定时发送默认关闭。** 建议先收到一份真实日报并检查内容，再完成定时配置。当前版本适合试用，尚不能视为稳定、全面的每日资讯服务。
+这个令牌用于保存发送记录，避免每天重复发送，**与 AI 无关**。
+
+1. 打开 [GitHub 创建细粒度令牌页面](https://github.com/settings/personal-access-tokens/new)。
+2. **Token name** 填写 `ai-daily-state`。
+3. **Expiration** 设置到期时间，例如 90 天；到期前需要更新令牌。
+4. **Resource owner** 选择自己的 GitHub 账户。
+5. **Repository access** 选择 **Only select repositories**，只勾选刚复制的日报仓库。
+6. 在 **Repository permissions** 中，将 **Contents** 设置为 **Read and write**。其他权限保持默认；自动附带的 Metadata 读取权限正常保留。
+7. 点击 **Generate token**，复制生成的令牌。
+
+令牌只会显示一次，下一步直接保存到 GitHub。不要发到聊天、截图或公开文件中。
+
+## 第四步：保存四项配置
+
+1. 打开仓库 **Settings → Environments → New environment**。
+2. 环境名称填写 `ai-daily-production`。
+3. 在 **Deployment branches and tags** 中选择 **Selected branches and tags**，只添加第一步记下的默认分支，类型选择分支（Branch）。
+4. 在该环境的 **Environment secrets → Add environment secret** 中，逐个添加：
+
+| Name（照抄） | Value（填写自己的信息） |
+| --- | --- |
+| `SMTP_USERNAME` | 完整 QQ 邮箱地址 |
+| `SMTP_PASSWORD` | 第二步获取的 QQ 邮箱授权码 |
+| `MAIL_TO` | 另一个收件邮箱地址，例如 Outlook |
+| `AI_DAILY_STATE_TOKEN` | 第三步生成的 GitHub 令牌 |
+
+这些配置应放在上述 **Environment secrets**，不是 Variables，也不是普通仓库级 Secrets。QQ 发件邮箱会自动收到一份，相同地址不会重复发送。
+
+不需要填写微软客户端 ID、微软加密密钥或 AI 密钥。
+
+## 第五步：测试邮箱并预览日报
+
+目前人工操作使用 GitHub CLI，尚未提供网页上的“一键发送”按钮。
+
+安装 [GitHub CLI](https://cli.github.com/)，在终端执行并按提示登录：
+
+```text
+gh auth login
+```
+
+下列命令中的 `OWNER/REPO` 换成自己的仓库，例如 `your-name/ai-daily-news`。命令中的 `master` 也要换成第一步确认的默认分支名。
+
+先发一封简单测试邮件：
+
+```text
+gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-test-mail
+```
+
+在 **Actions → Test QQ Email** 查看进度，再检查两个邮箱及垃圾邮件文件夹。此测试只验证邮箱，不验证自动发送所需的记录写入权限。
+
+接着生成真实日报预览，不发送邮件：
+
+```text
+gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request -f 'client_payload[target_ref]=refs/heads/master' -f 'client_payload[mode]=off' -F 'client_payload[send]=false' -F 'client_payload[force]=false'
+```
+
+等待 **AI Daily Request** 完成，在对应运行页面的 **Artifacts** 中下载 `ai-daily-safe-preview`，检查日报内容。采集可能需要几分钟。
+
+## 第六步：验证正式发送
+
+预览无误后，执行：
+
+```text
+gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request -f 'client_payload[target_ref]=refs/heads/master' -f 'client_payload[mode]=off' -F 'client_payload[send]=true' -F 'client_payload[force]=false'
+```
+
+这会先运行 **AI Daily Request**，再进入 **AI Daily Production**。请确认后者的 `daily` 任务实际运行成功，而不是被跳过，并检查两个邮箱收到日报。
+
+这一步同时验证新闻采集、发送记录保存和邮件投递。若仓库要求所有更改必须走拉取请求，直接保存发送记录可能被分支规则阻止；请按 [维护说明](docs/maintenance.md) 核对规则，不要盲目扩大令牌权限。
+
+同日正式发送成功后，再次运行通常会跳过。失败时先检查日志和收件箱，不要连续重发；“运行成功”也不等于邮件一定进入收件箱。
+
+## 第七步：开启每天自动发送
+
+1. 打开仓库 **Settings → Secrets and variables → Actions → Variables**。
+2. 点击 **New repository variable**。
+3. **Name** 填写 `AI_DAILY_SCHEDULE_ENABLED`。
+4. **Value** 填写小写的 `true`，保存。
+
+默认未配置此变量时不会自动发送。开启后，计划每天北京时间 **06:47** 开始，**07:22** 进行补偿检查。目标是早上 8 点前完成，但 GitHub 排队和来源响应可能导致延迟。
+
+开启开关不会立即补发当天日报。需要立即发送时使用第六步的命令。
+
+## 日常维护
+
+- **暂停自动发送**：将 `AI_DAILY_SCHEDULE_ENABLED` 改为 `false`。
+- **更换收件邮箱**：更新 `MAIL_TO`，QQ 发件邮箱仍会收到一份。
+- **QQ 授权码失效**：重新获取并更新 `SMTP_PASSWORD`。
+- **GitHub 令牌到期**：按第三步生成新令牌，更新 `AI_DAILY_STATE_TOKEN`。
+- **没有收到日报**：检查开关、四项配置，以及 **AI Daily Production** 中 `daily` 任务是否运行；再查看垃圾邮件。
+- **新闻少于 12 条**：按实际可用数量发送，不凑数。来源错误已从邮件屏蔽，详细信息保留在运行记录和 Markdown 存档中。
+
+当前 AI 仍关闭，填写状态令牌不会开启 AI 或产生模型费用。GitHub Actions 的使用额度以自己的账户为准。
 
 ## 仍待解决的内容
 
@@ -40,77 +133,9 @@
 | xAI、Perplexity、VentureBeat | 访问被拒绝或限流，尚未找到可靠的获取方式。 |
 | 路透及国内媒体发现通道 | 路透、机器之心、量子位、36氪、新智元、IT之家、财联社、虎嗅、钛媒体共用的 GDELT 接口频繁限流或返回异常内容，需要改善通道或寻找替代来源。 |
 | 来源覆盖情况 | 单个来源的技术报错已从邮件屏蔽，仍保留在运行记录和 Markdown 存档中；来源覆盖仍需继续完善。 |
-| 定时发送与运行稳定性 | 尚需完成状态保存令牌配置、正式定时流程验证，以及 GitHub Actions 环境中的持续抓取验证。 |
+| 定时发送与运行稳定性 | 部署者需按下文配置令牌；正式定时流程和 GitHub Actions 环境中的持续抓取效果仍需验证。 |
 | AI 摘要、翻译与筛选 | 暂未启用，后续再评估效果和费用。 |
 
 以上问题不会阻止已成功采集的内容生成邮件，但会影响覆盖面。邮件不再显示单个来源的报错，不代表所有来源都已恢复。
 
-## 开始使用
-
-### 1. 准备自己的仓库
-
-将项目 Fork 到自己的 GitHub 账户，并在仓库的 **Actions** 页面启用工作流。
-
-项目可以公开，邮箱授权码等敏感信息只填写在 GitHub 的 Secrets 中，不要写进文件或提交到仓库。
-
-### 2. 获取 QQ 邮箱授权码
-
-按 [QQ 邮箱官方教程：开启 SMTP 服务并获取授权码](https://help.mail.qq.com/detail/0/1087) 操作。
-
-授权码是给发信程序使用的，**不是 QQ 登录密码**。收件邮箱只用于接收日报，无需提供密码，也无需登录 Azure。
-
-### 3. 填写邮箱配置
-
-打开自己仓库的 **Settings → Environments**，创建名为 `ai-daily-production` 的环境。在分支限制中仅允许仓库的默认分支，再在 **Environment secrets** 中添加以下三项：
-
-| 名称（照抄） | 填写内容 |
-| --- | --- |
-| `SMTP_USERNAME` | 完整 QQ 邮箱地址 |
-| `SMTP_PASSWORD` | QQ 邮箱授权码 |
-| `MAIL_TO` | 另一个收件邮箱，例如 Outlook |
-
-QQ 发件邮箱也会自动收到一份，无需再填一次。相同收件地址不会重复发送。服务器和加密参数已配置好，无需手动设置。
-
-### 4. 先试一封邮件
-
-目前人工发送需要使用 GitHub CLI，尚未提供网页上的“一键发送”按钮。安装并登录 GitHub CLI 后，把下面的 `OWNER/REPO` 替换成自己的仓库名称，例如 `your-name/ai-daily-news`。
-
-只验证邮箱能否收件：
-
-```text
-gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-test-mail
-```
-
-采集真实新闻并发送一份日报：
-
-```text
-gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-send-once
-```
-
-在 **Actions → Test QQ Email** 中查看结果；这个入口同时用于测试邮件和人工日报。真实采集可能需要几分钟，请勿连续触发。任务成功后检查两个邮箱，也请查看垃圾邮件文件夹。
-
-人工日报的内容和运行记录会保留 7 天，可在对应运行页面下载。这个入口只发送一次，不会开启每天自动发送。
-
-### 5. 开启每天发送
-
-正式定时流程还需要 `AI_DAILY_STATE_TOKEN`，用于保存发送记录、避免重复投递。配置方法见 [定时部署与维护说明](docs/maintenance.md)。它与 QQ 邮箱授权码是两回事。
-
-完成配置并验证正式投递后，在 **Settings → Secrets and variables → Actions → Variables** 中，将 `AI_DAILY_SCHEDULE_ENABLED` 设置为 `true`。
-
-计划在北京时间 **06:47** 开始，**07:22** 有一次补偿检查，目标是早上 8 点前完成。GitHub 排队或来源响应缓慢可能造成延迟，不能保证准时送达。每次都会发给上面配置的两个邮箱。
-
-需要暂停时，将这个变量改为 `false`。
-
-## 常见问题
-
-**没收到邮件怎么办？** 先看 Actions 是否成功，再检查两个邮箱的垃圾邮件文件夹。服务器接受邮件不代表一定进入收件箱；不要立即重复发送。
-
-**QQ 授权码失效了怎么办？** 重新获取授权码，并更新 `SMTP_PASSWORD` 即可。
-
-**能修改收件邮箱吗？** 更新 `MAIL_TO` 即可。QQ 发件邮箱仍会同时收到一份。
-
-**为什么新闻少于 12 条？** 当天符合规则的新闻数量可能不足，也可能有来源暂时不可用。详细来源错误可在运行记录或 Markdown 存档中查看。
-
-**需要购买 AI 服务吗？** 当前不需要。AI 摘要、翻译和进一步筛选属于后续工作；GitHub Actions 的使用额度以自己的账户为准。
-
-维护者需要查看部署、来源诊断或历史 Outlook 发信方案时，请阅读 [维护说明](docs/maintenance.md)。
+详细排错和历史 Outlook 配置见 [维护说明](docs/maintenance.md)。
