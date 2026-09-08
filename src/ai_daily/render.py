@@ -12,6 +12,7 @@ from ai_daily.models import Digest
 
 _GITHUB_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]<>#()])")
+_SOURCE_DIAGNOSTIC = re.compile(r"^[a-z0-9][a-z0-9_-]*: ")
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,13 @@ def render_digest(
 ) -> RenderedDigest:
     """Render all digest formats without trusting fetched or model-provided content."""
     context = {"digest": digest, "cost": cost_report}
+    # Hide per-source collector diagnostics in mail, retaining them in the archive/logs.
+    email_context = {
+        "digest": digest.model_copy(update={
+            "warnings": [w for w in digest.warnings if not _SOURCE_DIAGNOSTIC.match(w)]
+        }),
+        "cost": cost_report,
+    }
     subject = (
         f"[AI Daily] {digest.local_date}｜{len(digest.news)} 条 AI 要闻 "
         f"+ GitHub 周榜 Top {len(digest.repositories)}"
@@ -70,7 +78,7 @@ def render_digest(
     text_environment = _environment(templates_dir, autoescape=False)
     return RenderedDigest(
         subject=subject,
-        html=html_environment.get_template("daily.html.j2").render(context),
-        text=text_environment.get_template("daily.txt.j2").render(context),
+        html=html_environment.get_template("daily.html.j2").render(email_context),
+        text=text_environment.get_template("daily.txt.j2").render(email_context),
         markdown=text_environment.get_template("daily.md.j2").render(context),
     )
