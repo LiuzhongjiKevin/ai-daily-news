@@ -10,24 +10,24 @@ from ai_daily.collectors.page import PageCollector
 SOURCES = {s.id: s for s in load_sources(Path(__file__).parents[1] / "config/sources.yaml")}
 CASES = [
     ("minimax", '<a href="/blog/model"><h3>Model</h3><span>2026-08-26</span></a>'),
-    ("sensetime", '<a href="/cn/news/model"><strong>Model</strong>'
-     '<time datetime="2026-08-26">2026/08/26</time></a>'),
+    ("sensetime", ('<a href="/cn/news/model"><strong>Model</strong>'
+     '<time datetime="2026-08-26">2026/08/26</time></a>')),
     ("mistral", '<a href="/news/model"><h3>Model</h3><p>August 26, 2026</p></a>'),
-    ("databricks-ai", '<li><a href="/blog/model"><div><h3>Model</h3>'
-     '<time>August 26, 2026</time></div></a></li>'),
-    ("stability-ai", '<article><article><h2><a href="/news-updates/model">Model</a></h2>'
-     '<time datetime="2026-08-26">August 26, 2026</time></article></article>'),
-    ("kimi-blog", '<div><a href="/en/blog/model"></a><div><h4>Model</h4>'
-     '<p class="card-date">2026-08-26</p></div></div>'),
-    ("qwen", '<article class="post-entry"><h2>Model</h2><footer class="entry-footer">'
+    ("databricks-ai", ('<li><a href="/blog/model"><div><h3>Model</h3>'
+     '<time>August 26, 2026</time></div></a></li>')),
+    ("stability-ai", ('<article><article><h2><a href="/news-updates/model">Model</a></h2>'
+     '<time datetime="2026-08-26">August 26, 2026</time></article></article>')),
+    ("kimi-blog", ('<div><a href="/en/blog/model"></a><div><h4>Model</h4>'
+     '<p class="card-date">2026-08-26</p></div></div>')),
+    ("qwen", ('<article class="post-entry"><h2>Model</h2><footer class="entry-footer">'
      '<span>August 26, 2026</span></footer><a class="entry-link" href="/blog/model/">'
-     '</a></article>'),
-    ("glm-release-notes", '<div class="update-container" id="2026-08-26">'
-     '<button>2026-08-26</button><p>Model</p><p>Details</p></div>'),
-    ("deepseek", '<article><h2 id="date">2026-08-26</h2><h3 id="model">Model</h3>'
-     '<h2 id="older">2025-01-01</h2><h3 id="old-model">Old</h3></article>'),
-    ("anthropic", '<a href="/news/model">Aug 26, 2026 Announcements '
-     '<h3>Model</h3></a>'),
+     '</a></article>')),
+    ("glm-release-notes", ('<div class="update-container" id="2026-08-26">'
+     '<button>2026-08-26</button><p>Model</p><p>Details</p></div>')),
+    ("deepseek", ('<article><h2 id="date">2026-08-26</h2><h3 id="model">Model</h3>'
+     '<h2 id="older">2025-01-01</h2><h3 id="old-model">Old</h3></article>')),
+    ("anthropic", ('<a href="/news/model">Aug 26, 2026 Announcements '
+     '<h3>Model</h3></a>')),
 ]
 
 
