@@ -10,6 +10,12 @@
 
 **Spec:** docs/world-finance-design.md
 
+## Execution status (2026-09-09)
+
+Content, rendering, isolated state, dedicated-recipient behavior and branch workflow are implemented. Local suite: 445 passed, 1 live test deselected. GitHub branch preview run 34336661040 passed and produced 8 items (6 world, 2 finance), from BBC, Guardian and UN; all seven feeds parsed, five returned eligible-window entries. No email was sent.
+
+Remaining deployment: install only the new launcher on master, prepare disabled environment, then wait for the user to fill its four secrets before a mail test. End-to-end authenticated state push and SMTP delivery are not yet verified for this edition. Do not mark the send/configuration acceptance steps complete until they are actually run.
+
 ## Global Constraints
 
 - English source text retained; no AI calls, investment advice, or GitHub ranking.
