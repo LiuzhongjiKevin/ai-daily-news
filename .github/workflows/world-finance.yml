@@ -1,0 +1,91 @@
+name: World Finance Daily
+
+on:
+  repository_dispatch:
+    types: [world-finance-preview, world-finance-send]
+  schedule:
+    - cron: '37 6 * * *'
+      timezone: Asia/Shanghai
+    - cron: '17 7 * * *'
+      timezone: Asia/Shanghai
+  push:
+    branches: [world-finance-daily]
+    paths:
+      - 'src/ai_daily/world_*.py'
+      - 'tests/test_world_*.py'
+      - config/world-sources.yaml
+      - .github/workflows/world-finance.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: world-finance-delivery
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    if: github.event_name != 'schedule' || vars.WORLD_FINANCE_SCHEDULE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || 'world-finance-daily' }}
+          persist-credentials: false
+      - name: Record exact source revision
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-dev.lock
+      - run: python -m pip install --no-deps --no-build-isolation -e .
+      - run: python -m ruff check .
+      - run: python -m pytest -m 'not live'
+      - name: Collect public feeds and render without mail credentials
+        run: python -m ai_daily.world_finance preview
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: world-finance-preview
+          path: world-preview/
+          retention-days: 7
+
+  send:
+    needs: preview
+    if: >-
+      github.ref == 'refs/heads/master' &&
+      ((github.event_name == 'schedule' && vars.WORLD_FINANCE_SCHEDULE_ENABLED == 'true') ||
+      (github.event_name == 'repository_dispatch' && github.event.action == 'world-finance-send'))
+    environment: world-finance-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.preview.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-prod.lock
+      - run: python -m pip install --no-deps --no-build-isolation -e .
+      - name: Send using dedicated state and dedicated recipient list
+        env:
+          WORLD_FINANCE_ENVIRONMENT: world-finance-production
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          WORLD_FINANCE_STATE_TOKEN: ${{ secrets.WORLD_FINANCE_STATE_TOKEN }}
+        run: python -m ai_daily.world_finance send
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: world-finance-delivery-diagnostics
+          path: |
+            world-preview/
+            world-state/state.json
+          retention-days: 7
