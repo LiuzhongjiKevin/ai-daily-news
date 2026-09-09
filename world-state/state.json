@@ -1,0 +1,11 @@
+{
+  "last_success_at": null,
+  "sent_dates": {},
+  "delivery_intents": {
+    "2026-09-09": {
+      "attempt_id": "world-4faa666487f743fe9defba46cc2db911",
+      "created_at": "2026-09-09T10:00:22.889159Z",
+      "status": "reserved"
+    }
+  }
+}
