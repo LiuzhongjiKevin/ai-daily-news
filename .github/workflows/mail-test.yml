@@ -42,7 +42,7 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ai-daily run --send --ai-mode off
+        run: python scripts/send_one_off_digest.py
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && github.event.action == 'ai-daily-send-once'
         with:
@@ -50,5 +50,4 @@ jobs:
           path: |
             preview/
             digests/
-            data/state.json
           retention-days: 7

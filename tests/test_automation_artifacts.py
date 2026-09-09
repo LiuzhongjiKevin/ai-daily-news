@@ -111,7 +111,8 @@ def test_daily_schedule_manual_inputs_and_state_commit_are_restricted() -> None:
         in {"Commit reserved intent", "Commit unattempted cleanup", "Commit accepted state"}
     ]
     assert len(commits) == 3
-    assert "git add -- data/ digests/ data/microsoft-token.enc" in commits[-1]
+    assert "git add -- data/ digests/" in commits[-1]
+    assert "git add -- data/ digests/ data/microsoft-token.enc" not in commits[-1]
     assert all("git add -A" not in commit for commit in commits)
     assert all("git pull" not in commit for commit in commits)
     assert all("git push" not in commit for commit in commits)
