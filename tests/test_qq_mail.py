@@ -81,6 +81,35 @@ def test_duplicate_recipients_only_receive_once(smtp):
     assert smtp[1].sendmail.call_args.args[1] == ["sender@qq.com"]
 
 
+def test_multiple_environment_recipients_reach_envelope_and_headers(monkeypatch, smtp):
+    monkeypatch.setenv("SMTP_USERNAME", "sender@qq.com")
+    monkeypatch.setenv("SMTP_PASSWORD", "secret")
+    monkeypatch.setenv(
+        "MAIL_TO", " reader@outlook.com, second@example.com ,reader@outlook.com,sender@qq.com"
+    )
+    QQMailer.from_environment().send(digest())
+    _, recipients, payload = smtp[1].sendmail.call_args.args
+    expected = ["reader@outlook.com", "second@example.com", "sender@qq.com"]
+    assert recipients == expected
+    message = BytesParser(policy=policy.default).parsebytes(payload)
+    assert [address.addr_spec for address in message["To"].addresses] == expected
+
+
+@pytest.mark.parametrize("addresses", [
+    "reader@outlook.com,",
+    "reader@outlook.com,,second@example.com",
+    "reader@outlook.com，second@example.com",
+    "reader@outlook.com;second@example.com",
+])
+def test_invalid_environment_recipient_lists_fail_before_connection(monkeypatch, smtp, addresses):
+    monkeypatch.setenv("SMTP_USERNAME", "sender@qq.com")
+    monkeypatch.setenv("SMTP_PASSWORD", "secret")
+    monkeypatch.setenv("MAIL_TO", addresses)
+    with pytest.raises(MailSendError):
+        QQMailer.from_environment()
+    smtp[0].assert_not_called()
+
+
 def test_all_recipient_addresses_are_validated(smtp):
     with pytest.raises(MailSendError):
         QQMailer("sender@qq.com", "secret", "reader@outlook.com, bad\r\nBcc: other@qq.com")

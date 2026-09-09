@@ -1,10 +1,10 @@
 # AI 新闻日报
 
-用 GitHub Actions 自动收集 AI 新闻和全领域 GitHub 热门项目，通过 QQ 邮箱发送日报。每份邮件同时发到 QQ 发件邮箱和指定的另一收件邮箱。当前不调用 AI，无模型费用；部分来源仍在完善。
+用 GitHub Actions 自动收集 AI 新闻和全领域 GitHub 热门项目，通过 QQ 邮箱发送日报。每份邮件同时发到 QQ 发件邮箱和指定的一个或多个收件邮箱。当前不调用 AI，无模型费用；部分来源仍在完善。
 
 ## 部署前准备
 
-准备一个 GitHub 账户、一个可用的 QQ 邮箱，以及另一个收件邮箱（例如 Outlook）。下面所有仓库设置都在**你自己的仓库**中操作。
+准备一个 GitHub 账户、一个可用的 QQ 邮箱，以及一个或多个收件邮箱（例如 Outlook）。下面所有仓库设置都在**你自己的仓库**中操作。
 
 ## 第一步：复制项目并启用 Actions
 
@@ -46,10 +46,14 @@
 | --- | --- |
 | `SMTP_USERNAME` | 完整 QQ 邮箱地址 |
 | `SMTP_PASSWORD` | 第二步获取的 QQ 邮箱授权码 |
-| `MAIL_TO` | 另一个收件邮箱地址，例如 Outlook |
+| `MAIL_TO` | 一个或多个收件邮箱，多个地址用英文逗号 `,` 分隔 |
 | `AI_DAILY_STATE_TOKEN` | 第三步生成的 GitHub 令牌 |
 
 这些配置应放在上述 **Environment secrets**，不是 Variables，也不是普通仓库级 Secrets。QQ 发件邮箱会自动收到一份，相同地址不会重复发送。
+
+例如，`MAIL_TO` 可以填写 `reader1@outlook.com,reader2@qq.com,reader3@example.com`。
+地址两侧可以留空格；不要使用中文逗号、分号、换行或末尾多余的逗号。仅填写邮箱地址，不带姓名。
+修改已有收件人时，编辑此 Secret 并保存完整的新名单即可，无需修改代码。每封邮件的 To 栏会列出全部收件人，收件人之间能看到彼此的邮箱地址。
 
 不需要填写微软客户端 ID、微软加密密钥或 AI 密钥。
 
@@ -109,7 +113,7 @@ gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request 
 ## 日常维护
 
 - **暂停自动发送**：将 `AI_DAILY_SCHEDULE_ENABLED` 改为 `false`。
-- **更换收件邮箱**：更新 `MAIL_TO`，QQ 发件邮箱仍会收到一份。
+- **更换或添加收件邮箱**：更新 `MAIL_TO` 的完整名单，多个地址用英文逗号分隔，QQ 发件邮箱仍会收到一份。
 - **QQ 授权码失效**：重新获取并更新 `SMTP_PASSWORD`。
 - **GitHub 令牌到期**：按第三步生成新令牌，更新 `AI_DAILY_STATE_TOKEN`。
 - **没有收到日报**：检查开关、四项配置，以及 **AI Daily Production** 中 `daily` 任务是否运行；再查看垃圾邮件。
