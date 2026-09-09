@@ -7,3 +7,5 @@ __pycache__/
 preview/
 data/microsoft-token.json
 data/state.json.lock
+world-preview/
+world-state/state.json.lock
