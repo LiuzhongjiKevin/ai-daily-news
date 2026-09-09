@@ -1,11 +1,7 @@
 {
-  "last_success_at": null,
-  "sent_dates": {},
-  "delivery_intents": {
-    "2026-09-09": {
-      "attempt_id": "world-4faa666487f743fe9defba46cc2db911",
-      "created_at": "2026-09-09T10:00:22.889159Z",
-      "status": "reserved"
-    }
-  }
+  "last_success_at": "2026-09-09T10:00:27.922183Z",
+  "sent_dates": {
+    "2026-09-09": "accepted-b7f3f8407cf98b9c71172d1e3bb9d1012e1876420e7b82218eda5c3961e9bc7d"
+  },
+  "delivery_intents": {}
 }
