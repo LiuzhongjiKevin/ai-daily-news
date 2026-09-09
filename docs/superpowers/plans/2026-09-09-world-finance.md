@@ -14,7 +14,9 @@
 
 Content, rendering, isolated state, dedicated-recipient behavior and branch workflow are implemented. Local suite: 445 passed, 1 live test deselected. GitHub branch preview run 34336661040 passed and produced 8 items (6 world, 2 finance), from BBC, Guardian and UN; all seven feeds parsed, five returned eligible-window entries. No email was sent.
 
-Remaining deployment: install only the new launcher on master, prepare disabled environment, then wait for the user to fill its four secrets before a mail test. End-to-end authenticated state push and SMTP delivery are not yet verified for this edition. Do not mark the send/configuration acceptance steps complete until they are actually run.
+Launcher-only master commit f3268be is installed; its CI run 34336965980 passed. Default-branch repository_dispatch preview run 34337014580 also passed with sending skipped. Environment world-finance-production exists and allows only master deployments; WORLD_FINANCE_SCHEDULE_ENABLED=false; no secrets have been copied from the AI edition.
+
+Remaining deployment: the user must fill the four independent environment secrets before a mail test. End-to-end authenticated state push and SMTP delivery are not yet verified for this edition. Do not mark the send/configuration acceptance steps complete until they are actually run.
 
 ## Global Constraints
 
