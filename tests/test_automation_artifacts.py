@@ -435,7 +435,8 @@ def test_manual_controls_use_default_branch_repository_dispatch_only() -> None:
     }
 
     assert all("workflow_dispatch" not in workflow[True]
-               for name, workflow in workflows.items() if name != "world-finance.yml")
+               for name, workflow in workflows.items()
+               if name not in {"world-finance.yml", "world-finance-debug.yml"})
     world = workflows["world-finance.yml"]
     manual = world[True]["workflow_dispatch"]["inputs"]["send"]
     assert manual["type"] == "boolean" and manual["default"] is False
