@@ -6,11 +6,13 @@ import json
 import os
 import re
 import time
+from collections import Counter
 from datetime import UTC, datetime
 
 import httpx
 
 from ai_daily.models import Digest
+from ai_daily.translation_numbers import numbers_equivalent
 
 HOST = 'tmt.tencentcloudapi.com'
 NOTICE = '部分内容为腾讯云机器翻译，以原文为准；翻译费用不包含在 AI 用量统计中。'
@@ -47,6 +49,7 @@ class TmtTranslator:
         self.characters = 0
         self.calls = 0
         self.translated = 0
+        self.reasons = Counter()
 
     @classmethod
     def from_environment(cls):
@@ -70,17 +73,28 @@ class TmtTranslator:
         # No credentials, source text, provider bodies, or exception messages in logs.
         print(f'TMT: requests={self.calls}, submitted_characters={self.characters}, '
               f'translated_fields={self.translated}, fallback={self._failed}')
+        print('TMT decisions: ' + json.dumps(dict(self.reasons), sort_keys=True))
+
+    def _keep_original(self, text, reason):
+        self._cache[text] = text
+        self.reasons[reason] += 1
+        return text
 
     def translate(self, text):
         if text in self._cache:
+            self.reasons['cached'] += 1
             return self._cache[text]
         # Short English fields only. Preserve Chinese/mixed Chinese, URLs and long fields.
-        if (not text or len(text) > 1000 or re.search(r'[\u3400-\u9fff]', text)
-                or not re.search(r'[A-Za-z]', text) or '://' in text
-                or self._failed or self.calls >= 40
-                or self.characters + len(text) > self._max_characters
-                or time.monotonic() >= self._deadline):
-            return text
+        for condition, reason in (
+            (not text, 'empty'), (len(text) > 1000, 'field_too_long'),
+            (bool(re.search(r'[\u3400-\u9fff]', text)), 'already_chinese_or_mixed'),
+            (not re.search(r'[A-Za-z]', text), 'no_latin_text'), ('://' in text, 'contains_url'),
+            (self._failed, 'circuit_open'), (self.calls >= 40, 'request_limit'),
+            (self.characters + len(text) > self._max_characters, 'character_limit'),
+            (time.monotonic() >= self._deadline, 'time_limit'),
+        ):
+            if condition:
+                return self._keep_original(text, reason)
         try:
             time.sleep(max(0, self._next_request - time.monotonic()))
             self._next_request = time.monotonic() + 0.25
@@ -103,15 +117,16 @@ class TmtTranslator:
             if 'Error' in body or not isinstance(result, str) or not result.strip() or len(result) > 4000:
                 raise ValueError('Invalid translation response')
             # A simple guard, not a guarantee of financial or linguistic accuracy.
-            if re.findall(r'\d+(?:[.,]\d+)*', text) != re.findall(r'\d+(?:[.,]\d+)*', result):
-                return text
+            if not numbers_equivalent(text, result):
+                return self._keep_original(text, 'numeric_mismatch')
             result = result.strip()
             self._cache[text] = result
             self.translated += result != text
+            self.reasons['translated' if result != text else 'provider_unchanged'] += 1
             return result
         except Exception:  # noqa: BLE001 - fail open to ORIGINAL TEXT, never to repeated API calls
             self._failed = True
-            return text
+            return self._keep_original(text, 'provider_error')
 
 
 def translate_digest(digest: Digest) -> Digest:
