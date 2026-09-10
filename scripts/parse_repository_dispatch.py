@@ -156,9 +156,23 @@ def _validated_values(kind: str, event: dict[str, Any]) -> dict[str, str] | None
     payload = event.get("client_payload")
     github_repository = os.environ.get("GITHUB_REPOSITORY", "")
     default_branch = os.environ.get("DEFAULT_BRANCH", "")
+    event_name = os.environ.get("GITHUB_EVENT_NAME")
+    if event_name == "workflow_dispatch":
+        inputs = event.get("inputs")
+        if (
+            kind != "daily"
+            or os.environ.get("GITHUB_REF") != f"refs/heads/{default_branch}"
+            or not isinstance(inputs, dict)
+            or set(inputs) != {"send"}
+            or not isinstance(inputs["send"], (str, bool))
+            or str(inputs["send"]).lower() not in {"true", "false"}
+        ):
+            return None
+        payload = {"target_ref": f"refs/heads/{default_branch}", "mode": "off",
+                   "send": str(inputs["send"]).lower() == "true", "force": False}
     if (
-        os.environ.get("GITHUB_EVENT_NAME") != "repository_dispatch"
-        or event.get("action") != _ACTIONS[kind]
+        event_name not in {"repository_dispatch", "workflow_dispatch"}
+        or (event_name == "repository_dispatch" and event.get("action") != _ACTIONS[kind])
         or not isinstance(repository, dict)
         or not isinstance(payload, dict)
         or _REPOSITORY_PATTERN.fullmatch(github_repository) is None

@@ -1,7 +1,13 @@
 name: AI Daily Request
-run-name: ai-daily-request|mode=${{ github.event.client_payload.mode }}|send=${{ github.event.client_payload.send }}|force=${{ github.event.client_payload.force }}|ref=${{ github.event.client_payload.target_ref }}
+run-name: ai-daily-request|mode=${{ github.event_name == 'workflow_dispatch' && 'off' || github.event.client_payload.mode }}|send=${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.send) || format('{0}', github.event.client_payload.send) }}|force=${{ github.event_name == 'workflow_dispatch' && 'false' || format('{0}', github.event.client_payload.force) }}|ref=${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.client_payload.target_ref }}
 
 on:
+  workflow_dispatch:
+    inputs:
+      send:
+        description: '发送正式邮件（不勾选只预览；Branch 请选择 master；当天已发送则跳过）'
+        type: boolean
+        default: false
   repository_dispatch:
     types: [ai-daily-request]
 
@@ -10,6 +16,7 @@ permissions:
 
 jobs:
   safe_preview:
+    if: github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     permissions:
       contents: read

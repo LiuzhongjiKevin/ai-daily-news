@@ -435,7 +435,7 @@ def test_manual_controls_use_default_branch_repository_dispatch_only() -> None:
     }
 
     assert all("workflow_dispatch" not in workflow[True]
-               for name, workflow in workflows.items() if name != "world-finance.yml")
+               for name, workflow in workflows.items() if name not in {"world-finance.yml", "request.yml"})
     world = workflows["world-finance.yml"]
     manual = world[True]["workflow_dispatch"]["inputs"]["send"]
     assert manual["type"] == "boolean" and manual["default"] is False
@@ -443,9 +443,9 @@ def test_manual_controls_use_default_branch_repository_dispatch_only() -> None:
     assert "github.ref == 'refs/heads/master' &&" in guard
     assert "github.event_name == 'workflow_dispatch' && inputs.send == true" in guard
     assert world["jobs"]["send"]["environment"] == "world-finance-production"
-    assert workflows["request.yml"][True] == {
-        "repository_dispatch": {"types": ["ai-daily-request"]}
-    }
+    assert workflows["request.yml"][True]["repository_dispatch"] == {"types": ["ai-daily-request"]}
+    manual_ai = workflows["request.yml"][True]["workflow_dispatch"]["inputs"]["send"]
+    assert manual_ai["type"] == "boolean" and manual_ai["default"] is False
     assert workflows["resolve-delivery-request.yml"][True] == {
         "repository_dispatch": {"types": ["ai-daily-resolve"]}
     }
@@ -469,8 +469,8 @@ def test_manual_request_workflow_is_trusted_read_only_and_checks_out_target_as_d
     assert "--send" not in commands
     assert "reserve-delivery" not in commands
     assert "git push" not in commands
-    assert "mode=${{ github.event.client_payload.mode }}" in workflow["run-name"]
-    assert "ref=${{ github.event.client_payload.target_ref }}" in workflow["run-name"]
+    assert "github.event.client_payload.mode" in workflow["run-name"]
+    assert "github.event.client_payload.target_ref" in workflow["run-name"]
     validation = next(step for step in job["steps"] if step.get("id") == "request")
     assert validation["run"] == "python scripts/parse_repository_dispatch.py daily"
     checkouts = [

@@ -49,7 +49,14 @@ def _trusted(default_branch: str) -> bool:
         return False
     return (
         _trusted_workflow_identity()
-        and os.environ.get("TRIGGER_EVENT") == "repository_dispatch"
+        and (
+            os.environ.get("TRIGGER_EVENT") == "repository_dispatch"
+            or (
+                os.environ.get("TRIGGER_EVENT") == "workflow_dispatch"
+                and os.environ.get("EXPECTED_TRIGGER_WORKFLOW_NAME") == "AI Daily Request"
+                and os.environ.get("EXPECTED_TRIGGER_WORKFLOW_PATH") == ".github/workflows/request.yml"
+            )
+        )
         and os.environ.get("TRIGGER_HEAD_BRANCH") == default_branch
         and os.environ.get("TRIGGER_HEAD_SHA") == github_sha
         and os.environ.get("TRIGGER_HEAD_REPOSITORY") == github_repository

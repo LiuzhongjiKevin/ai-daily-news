@@ -73,7 +73,9 @@ gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-test-mai
 
 在 **Actions → Test QQ Email** 查看进度，再检查两个邮箱及垃圾邮件文件夹。此测试只验证邮箱，不验证自动发送所需的记录写入权限。
 
-接着生成真实日报预览，不发送邮件：
+接着生成真实日报预览，不发送邮件：打开 **Actions → AI Daily Request → Run workflow**，Branch 选择默认分支（本仓库为 **master**），不要勾选“发送正式邮件”，再点击绿色 **Run workflow** 按钮。此方式不调用 AI，不产生 AI 费用。
+
+也可以使用命令行：
 
 ```text
 gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request -f 'client_payload[target_ref]=refs/heads/master' -f 'client_payload[mode]=off' -F 'client_payload[send]=false' -F 'client_payload[force]=false'
@@ -83,7 +85,9 @@ gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request 
 
 ## 第六步：验证正式发送
 
-预览无误后，执行：
+预览无误后，打开 **Actions → AI Daily Request → Run workflow**，Branch 选择 **master**，勾选“发送正式邮件”，点击绿色 **Run workflow** 按钮。
+
+也可以执行：
 
 ```text
 gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request -f 'client_payload[target_ref]=refs/heads/master' -f 'client_payload[mode]=off' -F 'client_payload[send]=true' -F 'client_payload[force]=false'
@@ -104,7 +108,7 @@ gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request 
 
 默认未配置此变量时不会自动发送。开启后，计划每天北京时间 **06:47** 开始，**07:22** 进行补偿检查。目标是早上 8 点前完成，但 GitHub 排队和来源响应可能导致延迟。
 
-开启开关不会立即补发当天日报。需要立即发送时使用第六步的命令。
+开启开关不会立即补发当天日报。需要立即发送时使用第六步的手动按钮或命令。
 
 ## 日常维护
 
