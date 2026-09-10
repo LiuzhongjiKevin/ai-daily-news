@@ -106,6 +106,14 @@ gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request 
 
 同日正式发送成功后，再次运行通常会跳过。失败时先检查日志和收件箱，不要连续重发；“运行成功”也不等于邮件一定进入收件箱。
 
+## 可选：同日重复调试发送
+
+打开 **Actions → AI Daily Debug Send → Run workflow**，Branch 选择 **master**，勾选“确认发送真实 AI 日报”，再点击绿色 **Run workflow**。
+
+这个独立入口只能手动触发，不会定时运行。每次使用全新的临时发送记录，因此不受正式日报的 `already_sent` 限制，也不会修改或清除正式发送记录。使用 `ai-daily-production` 中已有的邮箱及可选 TMT 凭据，无需新增 Secrets 或状态令牌；每次确认都会尝试发送真实日报，可能再次消耗翻译额度。不勾选只执行代码检查，不发邮件。
+
+调试不调用大模型。重复运行或 Re-run jobs 都可能重复发信；若运行中断或结果不确定，请先查邮箱及日志，不要盲目重跑。正式日报仍保留每天防重复发送规则。
+
 ## 第七步：开启每天自动发送
 
 1. 打开仓库 **Settings → Secrets and variables → Actions → Variables**。
