@@ -33,7 +33,11 @@ QQ 授权码参考 [QQ 官方 SMTP 教程](https://help.mail.qq.com/detail/0/108
 
 ## 2. 先验证预览
 
-安装并登录 GitHub CLI 后，将 OWNER/REPO 换成自己的仓库：
+打开 **Actions → World Finance Daily → Run workflow**，Branch 选择 **master**，不要勾选发送，点击绿色 **Run workflow** 按钮。
+
+这里选择 master 是为了从受信任的入口启动，实际采集和发送使用的仍是独立的 `world-finance-daily` 分支。
+
+也可以安装并登录 GitHub CLI 后，将 OWNER/REPO 换成自己的仓库：
 
 ```text
 gh api --method POST repos/OWNER/REPO/dispatches -f event_type=world-finance-preview
@@ -45,7 +49,9 @@ gh api --method POST repos/OWNER/REPO/dispatches -f event_type=world-finance-pre
 
 ## 3. 手动发送
 
-配置完成并确认名单后，执行：
+配置完成并确认名单后，打开 **Actions → World Finance Daily → Run workflow**，Branch 选择 **master**，勾选 **发送正式邮件**，再点击绿色 **Run workflow** 按钮。
+
+也可以使用命令行：
 
 ```text
 gh api --method POST repos/OWNER/REPO/dispatches -f event_type=world-finance-send
