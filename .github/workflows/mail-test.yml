@@ -37,6 +37,8 @@ jobs:
       - name: Collect and send one real digest to both inboxes
         if: github.event.action == 'ai-daily-send-once'
         env:
+          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
           MAIL_PROVIDER: qq
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}

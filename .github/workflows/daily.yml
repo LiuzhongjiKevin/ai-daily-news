@@ -163,6 +163,8 @@ jobs:
           (steps.reserve.outputs.reservation_status == 'reserved' ||
           steps.reserve.outputs.reservation_status == 'already_sent')
         env:
+          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
+          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
           MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
           MAIL_PROVIDER: qq
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
