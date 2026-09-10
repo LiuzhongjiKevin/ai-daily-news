@@ -3,5 +3,11 @@
   "sent_dates": {
     "2026-09-09": "accepted-b7f3f8407cf98b9c71172d1e3bb9d1012e1876420e7b82218eda5c3961e9bc7d"
   },
-  "delivery_intents": {}
+  "delivery_intents": {
+    "2026-09-10": {
+      "attempt_id": "world-9d77b195ad2f4e4ca9d1e87606473380",
+      "created_at": "2026-09-10T06:02:19.365892Z",
+      "status": "reserved"
+    }
+  }
 }
