@@ -97,17 +97,29 @@ def render_world(items: list[RawItem], now: datetime, diagnostics: list[dict], *
             f"来源检查 {len(diagnostics)} 个，失败 {failed} 个。"
             "本版非全球全量覆盖；选稿优先级不是事实可信度或投资建议。")
     text = [subject, note]
-    html = [f'<html><body><h1>{escape(subject)}</h1><p>{escape(note)}</p>']
+    html = [
+        ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+         '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+         '<body style="margin:0;padding:0;background-color:#f3f4f6;">'),
+        ('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+        'style="background-color:#f3f4f6;"><tr><td align="center" style="padding:24px 12px;">'),
+        ('<table role="presentation" width="720" cellpadding="0" cellspacing="0" border="0" '
+        'style="width:100%;max-width:720px;font-family:Arial,\'Microsoft YaHei\',sans-serif;color:#1f2937;">'),
+        (f'<tr><td style="padding:4px 8px 16px;"><h1 style="font-size:24px;line-height:34px;'
+        f'margin:0 0 12px;">{escape(subject)}</h1><p style="font-size:13px;line-height:21px;'
+        f'color:#6b7280;margin:0;">{escape(note)}</p></td></tr>'),
+    ]
     markdown = [f"# {subject}", note]
     for category, label in LABELS.items():
         rows = [item for item in items if item.category == category]
         text.append(f"\n{label}（{len(rows)} 条）")
-        html.append(f"<h2>{label}（{len(rows)} 条）</h2>")
+        html.append(f'<tr><td style="padding:20px 8px 12px;"><h2 style="margin:0;font-size:20px;'
+                    f'line-height:28px;color:#111827;">{label}（{len(rows)} 条）</h2></td></tr>')
         markdown.append(f"\n## {label}")
         if not rows:
             message = "本时段未取得符合筛选条件的条目，不代表没有相关新闻。"
             text.append(message)
-            html.append(f"<p>{message}</p>")
+            html.append(f'<tr><td style="padding:12px 8px;">{message}</td></tr>')
             markdown.append(message)
         for item in rows:
             stamp = item.published_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
@@ -117,17 +129,39 @@ def render_world(items: list[RawItem], now: datetime, diagnostics: list[dict], *
             meta = f"{item.source_name} · {source} · {stamp}"
             excerpt = item.excerpt[:220].strip()
             title = item.title
+            original_title = ''
             if translator is not None:
                 translated_title = translator.translate(title)
                 if translated_title != title:
-                    title = f"{translated_title}（原文：{title}）"
+                    original_title, title = title, translated_title
                 excerpt = translator.translate(excerpt)
             url = canonicalize_url(str(item.canonical_url))
-            text.extend([title, meta, excerpt, url, ""])
-            html.append(f'<h3><a href="{escape(url, quote=True)}">{escape(title)}</a></h3>'
-                        f'<p>{escape(meta)}</p><p>{escape(excerpt)}</p>')
-            markdown.extend([f"### {_markdown_text(title)}", meta,
-                             _markdown_text(excerpt), url, ""])
-    html.append("</body></html>")
+            original_line = f'原文：{original_title}' if original_title else ''
+            text.extend([title, original_line, meta, '', excerpt, url, '', '─' * 40, ''])
+            original_html = (
+                f'<p class="original-title" style="margin:10px 0 0;font-size:13px;line-height:20px;'
+                f'color:#6b7280;">原文：{escape(original_title)}</p>' if original_title else ''
+            )
+            html.append(
+                '<tr><td style="padding:0 0 16px;">'
+                '<table class="news-card" role="presentation" width="100%" cellpadding="0" '
+                'cellspacing="0" border="0" style="background-color:#ffffff;border:1px solid #d1d5db;'
+                'border-radius:8px;"><tr><td style="padding:22px 24px;">'
+                f'<h3 style="margin:0;font-size:18px;line-height:28px;"><a '
+                f'href="{escape(url, quote=True)}" style="color:#111827;text-decoration:none;">'
+                f'{escape(title)}</a></h3>{original_html}'
+                f'<p class="news-source" style="margin:14px 0 3px;font-size:12px;line-height:18px;'
+                f'color:#4b5563;">{escape(item.source_name)} · {escape(source)}</p>'
+                f'<p class="news-time" style="margin:0 0 14px;font-size:12px;line-height:18px;'
+                f'color:#6b7280;">发布时间：{escape(stamp)}</p>'
+                f'<p style="margin:0;padding-top:14px;border-top:1px solid #e5e7eb;'
+                f'font-size:15px;line-height:25px;">{escape(excerpt)}</p>'
+                f'<p style="margin:14px 0 0;font-size:13px;"><a href="{escape(url, quote=True)}" '
+                'style="color:#2563eb;text-decoration:underline;">阅读原文 →</a></p>'
+                '</td></tr></table></td></tr>'
+            )
+            markdown.extend([f"### {_markdown_text(title)}", '', _markdown_text(original_line), '',
+                             meta, '', _markdown_text(excerpt), '', url, '', '---', ''])
+    html.append("</table></td></tr></table></body></html>")
     return RenderedDigest(subject=subject, text="\n".join(text),
                           html="\n".join(html), markdown="\n".join(markdown))

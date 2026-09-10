@@ -59,3 +59,26 @@ def test_twelve_distinct_stories_are_capped_at_six_per_section():
 def test_opinion_is_not_labelled_as_straight_reporting():
     rendered = render_world([item("Central bank outlook | Letter", category="finance")], NOW, [])
     assert "评论/分析" in rendered.text
+
+
+def test_each_story_is_a_separate_email_card_with_original_below_title():
+    from bs4 import BeautifulSoup
+
+    class Translator:
+        def translate(self, text):
+            return '中文 <script>不可信</script>'
+
+    rendered = render_world([item('Trade agreement', 1), item('Oil market', 2, 'finance')],
+                            NOW, [], translator=Translator())
+    document = BeautifulSoup(rendered.html, 'html.parser')
+    cards = document.select('table.news-card')
+    assert len(cards) == 2
+    for card, original in zip(cards, ('Trade agreement', 'Oil market'), strict=True):
+        assert original not in card.h3.get_text()
+        assert original in card.select_one('.original-title').get_text()
+        assert card.select_one('.news-source') is not None
+        assert card.select_one('.news-time') is not None
+        assert 'border:' in card['style']
+        assert card.find('script') is None
+    assert rendered.markdown.count('\n---\n') == 2
+    assert rendered.text.count('─' * 40) == 2

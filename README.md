@@ -99,6 +99,10 @@ gh api --method POST repos/OWNER/REPO/dispatches -f event_type=world-finance-sen
 
 机器翻译可能误译；数字校验不能保证币种、涨跌方向或政策措辞准确，请以原文为准。AI 日报需在 `ai-daily-production` 环境单独配置同名两项，彼此独立。
 
+数字保护支持常见等价写法，例如 November 与 11月、$5,000 与 5000美元、$6bn 与 60亿美元；不支持或不一致的表达仍保留原文，不保证所有译文都通过。日志 `TMT decisions` 中，`numeric_mismatch` 表示数字或单位不一致，`provider_unchanged` 表示接口原样返回，`provider_error` 表示接口调用或响应错误，`circuit_open` 表示发生错误后停止后续调用，`character_limit` / `request_limit` / `time_limit` 表示达到本次预算。只记录原因计数，不记录密钥和新闻正文。
+
+邮件采用逐条新闻卡片，原标题、来源、时间和摘要分别显示；纯文本及 Markdown 版本用分隔线区分新闻。此排版同时适用于正式日报和调试发送。
+
 当前使用 BBC、Guardian 的国际/财经频道，以及联合国、美联储、欧洲央行 RSS。部分报道有地区偏向，不等于全球全量覆盖。基于来源、主题和时效性规则筛选、去重；不保证覆盖所有重要事件，也不将排序分数当作可信度。
 
 更多中文来源、更完整的事件聚类和额外地区覆盖可在后续验证后加入。X 来源未接入。
