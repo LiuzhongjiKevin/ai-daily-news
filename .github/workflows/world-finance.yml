@@ -1,6 +1,12 @@
 name: World Finance Daily
 
 on:
+  workflow_dispatch:
+    inputs:
+      send:
+        description: '发送正式邮件（不勾选则只预览；Branch 请选择 master）'
+        type: boolean
+        default: false
   repository_dispatch:
     types: [world-finance-preview, world-finance-send]
   schedule:
@@ -59,7 +65,8 @@ jobs:
     if: >-
       github.ref == 'refs/heads/master' &&
       ((github.event_name == 'schedule' && vars.WORLD_FINANCE_SCHEDULE_ENABLED == 'true') ||
-      (github.event_name == 'repository_dispatch' && github.event.action == 'world-finance-send'))
+      (github.event_name == 'repository_dispatch' && github.event.action == 'world-finance-send') ||
+      (github.event_name == 'workflow_dispatch' && inputs.send == true))
     environment: world-finance-production
     runs-on: ubuntu-latest
     timeout-minutes: 15

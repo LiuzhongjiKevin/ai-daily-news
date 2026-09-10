@@ -434,7 +434,15 @@ def test_manual_controls_use_default_branch_repository_dispatch_only() -> None:
         for path in (ROOT / ".github" / "workflows").glob("*.yml")
     }
 
-    assert all("workflow_dispatch" not in workflow[True] for workflow in workflows.values())
+    assert all("workflow_dispatch" not in workflow[True]
+               for name, workflow in workflows.items() if name != "world-finance.yml")
+    world = workflows["world-finance.yml"]
+    manual = world[True]["workflow_dispatch"]["inputs"]["send"]
+    assert manual["type"] == "boolean" and manual["default"] is False
+    guard = world["jobs"]["send"]["if"]
+    assert "github.ref == 'refs/heads/master' &&" in guard
+    assert "github.event_name == 'workflow_dispatch' && inputs.send == true" in guard
+    assert world["jobs"]["send"]["environment"] == "world-finance-production"
     assert workflows["request.yml"][True] == {
         "repository_dispatch": {"types": ["ai-daily-request"]}
     }
