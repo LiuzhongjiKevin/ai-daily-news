@@ -8,4 +8,5 @@ preview/
 data/microsoft-token.json
 data/state.json.lock
 world-preview/
+world-debug/
 world-state/state.json.lock

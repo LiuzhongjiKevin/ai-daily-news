@@ -63,6 +63,14 @@ gh api --method POST repos/OWNER/REPO/dispatches -f event_type=world-finance-sen
 
 ## 4. 开启每日发送
 
+### 需要同日重复测试？使用独立调试入口
+
+打开 **Actions → World Finance Debug Send → Run workflow**，Branch 选择 **master**，勾选“确认发送一封调试日报”，点击绿色 **Run workflow**。
+
+此入口只有手动触发，不会定时执行。每次确认都会发送一封带“调试发送”标题的真实财经日报，不检查当天是否已发送，不读取或修改正式发送状态，不需要状态令牌。使用 `world-finance-production` 的邮箱和可选 TMT 翻译配置，收件人名单与财经日报一致。
+
+每次运行（包括 Re-run jobs）都可能重复发邮件并消耗翻译额度。发送异常不会自动重试；请先检查邮箱和日志再决定是否重跑。运行页的 `world-finance-debug` 附件保留本次邮件正文和诊断信息。正式日报仍每天最多发送一次。
+
 在 **Settings → Secrets and variables → Actions → Variables** 新建仓库变量：
 
 - 名称：`WORLD_FINANCE_SCHEDULE_ENABLED`
