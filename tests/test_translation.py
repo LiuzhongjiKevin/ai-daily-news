@@ -85,6 +85,40 @@ def test_changed_numbers_fall_back_and_redirects_are_not_followed():
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize('original,translated', [
+    ('November elections', '11月选举'),
+    ('Since July', '自七月以来'),
+    ('Buy back $6bn in debt', '回购60亿美元债务'),
+    ('Receive $5,000', '获得5000美元'),
+    ('Raise £9bn', '筹集90亿英镑'),
+    ('Cost over $1tn', '花费超过1万亿美元'),
+    ('Prices rise by 12.6%', '价格上涨12.6％'),
+    ('Revenue is $1.5 million', '收入为150万美元'),
+])
+def test_equivalent_months_and_amounts_are_not_discarded(original, translated):
+    with translator(lambda request: httpx.Response(
+            200, json={'Response': {'TargetText': translated}})) as service:
+        assert service.translate(original) == translated
+
+
+@pytest.mark.parametrize('original,translated', [
+    ('Cost $6bn', '花费6亿美元'), ('Cost $100', '花费100英镑'),
+    ('Rise 5%', '上升50%'), ('November vote', '12月投票'),
+    ('Rate -5%', '利率5%'), ('Rate 5%', '利率5'),
+    ('Prices may rise', '价格5月上涨'),
+])
+def test_unequal_values_units_and_months_keep_original_with_diagnostics(original, translated, capsys):
+    calls = []
+    with translator(lambda request: calls.append(request) or httpx.Response(
+            200, json={'Response': {'TargetText': translated}})) as service:
+        assert service.translate(original) == original
+        assert service.translate(original) == original
+    assert len(calls) == 1
+    output = capsys.readouterr().out
+    assert 'numeric_mismatch' in output
+    assert original not in output and translated not in output
+
+
 def test_long_field_and_expired_time_budget_do_not_call_api():
     calls = []
     with translator(lambda request: calls.append(request)) as service:
