@@ -131,6 +131,8 @@ gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-request 
 
 机器翻译可能误译；数字校验仅为辅助，财经术语、币种、涨跌方向仍应核对原文。国际财经日报须在它自己的 `world-finance-production` 环境单独配置这两项。
 
+数字保护支持常见等价写法，例如 November 与 11月、$5,000 与 5000美元、$6bn 与 60亿美元；不支持或不一致的表达仍保留原文。日志 `TMT decisions` 会按原因计数：`numeric_mismatch` 为数字或单位不一致，`provider_unchanged` 为接口原样返回，`provider_error` 为接口或响应错误，`circuit_open` 为错误后停止调用，`character_limit` / `request_limit` / `time_limit` 为本次预算限制。不记录密钥或新闻正文，也不能用数字检查替代语义核对。
+
 - **暂停自动发送**：将 `AI_DAILY_SCHEDULE_ENABLED` 改为 `false`。
 - **更换收件邮箱**：更新 `MAIL_TO`，QQ 发件邮箱仍会收到一份。
 - **QQ 授权码失效**：重新获取并更新 `SMTP_PASSWORD`。
