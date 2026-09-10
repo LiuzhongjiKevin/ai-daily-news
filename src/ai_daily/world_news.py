@@ -84,14 +84,16 @@ def select_news(items: list[RawItem], now: datetime) -> list[RawItem]:
     return selected
 
 
-def render_world(items: list[RawItem], now: datetime, diagnostics: list[dict]) -> RenderedDigest:
+def render_world(items: list[RawItem], now: datetime, diagnostics: list[dict], *, translator=None) -> RenderedDigest:
     local = now.astimezone(_timezone("Asia/Shanghai"))
     day = local.date().isoformat()
     subject = f"国际形势与财经日报 {day}"
     start = (local - timedelta(hours=24)).strftime("%m-%d %H:%M")
     end = local.strftime("%m-%d %H:%M")
     failed = sum(row["status"] == "failed" for row in diagnostics)
-    note = (f"采集窗口：{start}—{end}（北京时间）。原文标题与短摘要，未自动翻译。"
+    translation_note = ("尝试腾讯云机器翻译，以原文为准；未翻译或翻译失败的内容保留原文。"
+                        if translator is not None else "原文标题与短摘要，未自动翻译。")
+    note = (f"采集窗口：{start}—{end}（北京时间）。{translation_note}"
             f"来源检查 {len(diagnostics)} 个，失败 {failed} 个。"
             "本版非全球全量覆盖；选稿优先级不是事实可信度或投资建议。")
     text = [subject, note]
@@ -114,11 +116,17 @@ def render_world(items: list[RawItem], now: datetime, diagnostics: list[dict]) -
                 source = "评论/分析"
             meta = f"{item.source_name} · {source} · {stamp}"
             excerpt = item.excerpt[:220].strip()
+            title = item.title
+            if translator is not None:
+                translated_title = translator.translate(title)
+                if translated_title != title:
+                    title = f"{translated_title}（原文：{title}）"
+                excerpt = translator.translate(excerpt)
             url = canonicalize_url(str(item.canonical_url))
-            text.extend([item.title, meta, excerpt, url, ""])
-            html.append(f'<h3><a href="{escape(url, quote=True)}">{escape(item.title)}</a></h3>'
+            text.extend([title, meta, excerpt, url, ""])
+            html.append(f'<h3><a href="{escape(url, quote=True)}">{escape(title)}</a></h3>'
                         f'<p>{escape(meta)}</p><p>{escape(excerpt)}</p>')
-            markdown.extend([f"### {_markdown_text(item.title)}", meta,
+            markdown.extend([f"### {_markdown_text(title)}", meta,
                              _markdown_text(excerpt), url, ""])
     html.append("</body></html>")
     return RenderedDigest(subject=subject, text="\n".join(text),

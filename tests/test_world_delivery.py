@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 
 from ai_daily.models import RawItem
@@ -73,3 +74,32 @@ def test_one_publisher_is_not_enough_to_send(tmp_path):
     with pytest.raises(ValueError):
         deliver(tmp_path, rows()[:1], NOW, [], None, lambda: None)
     assert not (tmp_path / "world-state" / "state.json").exists()
+
+
+@pytest.mark.parametrize('fails', [False, True])
+def test_optional_translation_is_delivery_only_and_can_fail_open(tmp_path, monkeypatch, fails):
+    from ai_daily.translation import TmtTranslator
+    from ai_daily.world_news import render_world
+
+    requests, sent = [], []
+    def server(request):
+        requests.append(request)
+        return httpx.Response(200, json={'Response': (
+            {'Error': {'Code': 'LimitExceeded'}} if fails else {'TargetText': '贸易和平'})})
+    monkeypatch.setattr(TmtTranslator, 'from_environment', lambda: TmtTranslator(
+        'fake-id', 'fake-key', client=httpx.Client(transport=httpx.MockTransport(server))))
+    assert 'Trade peace' in render_world(rows(), NOW, []).text
+    assert requests == []
+
+    class Mailer:
+        def send(self, rendered):
+            sent.append(rendered)
+            return 'accepted-tmt-test'
+
+    assert deliver(tmp_path, rows(), NOW, [], Mailer(), lambda: None) == 'accepted'
+    assert len(requests) == 1  # same title is translated once, or circuit opens on failure
+    assert 'Trade peace' in sent[0].text  # preserve original title even on success
+    assert ('贸易和平' in sent[0].text) is not fails
+    assert 'https://example.com/bbc-world' in sent[0].text
+    assert deliver(tmp_path, rows(), NOW, [], Mailer(), lambda: None) == 'already_sent'
+    assert len(requests) == 1

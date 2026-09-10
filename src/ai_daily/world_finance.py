@@ -17,6 +17,7 @@ from ai_daily.http import RetryingClient
 from ai_daily.mail import QQMailer
 from ai_daily.pipeline import _timezone
 from ai_daily.state import StateStore
+from ai_daily.translation import TmtTranslator
 from ai_daily.world_news import publisher, render_world, select_news
 
 BRANCH = "world-finance-daily"
@@ -63,6 +64,11 @@ def deliver(root, items, now, diagnostics, mailer, checkpoint):
         return "already_sent"
     # A failed push leaves an unresolved reservation locally and MUST prevent SMTP.
     checkpoint()
+    # Only spend translation quota once a new, durable send is authorized.
+    translator = TmtTranslator.from_environment()
+    if translator is not None:
+        with translator:
+            rendered = render_world(items, now, diagnostics, translator=translator)
     with store.delivery_operation(day, attempt) as operation:
         operation.mark_ambiguous()
         try:
@@ -109,7 +115,8 @@ def checkpoint_state(root):
     environment.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.https://github.com/.extraheader",
                        GIT_CONFIG_VALUE_0=f"AUTHORIZATION: basic {encoded}",
                        GIT_TERMINAL_PROMPT="0")
-    for name in ("WORLD_FINANCE_STATE_TOKEN", "SMTP_USERNAME", "SMTP_PASSWORD", "MAIL_TO"):
+    for name in ("WORLD_FINANCE_STATE_TOKEN", "SMTP_USERNAME", "SMTP_PASSWORD", "MAIL_TO",
+                 "TENCENTCLOUD_SECRET_ID", "TENCENTCLOUD_SECRET_KEY"):
         environment.pop(name, None)
     git("push", f"https://github.com/{repository}.git", f"HEAD:refs/heads/{BRANCH}",
         environment=environment)
