@@ -506,10 +506,13 @@ def test_trusted_cost_preview_and_delivery_have_disjoint_authority() -> None:
     )
 
     assert set(preview_run["env"]) == {"GITHUB_TOKEN"}
+    assert "TENCENTCLOUD_SECRET" not in str(preview)
     assert all(name not in str(preview) for name in ("MS_CLIENT_ID", "MS_TOKEN_KEY", "OUTLOOK_SENDER", "MAIL_TO"))
     assert "ai-daily preview" in preview_run["run"]
     assert "--send" not in preview_run["run"]
     assert set(delivery_run["env"]) == {
+        "TENCENTCLOUD_SECRET_ID",
+        "TENCENTCLOUD_SECRET_KEY",
         "MAIL_PROVIDER",
         "SMTP_USERNAME",
         "SMTP_PASSWORD",

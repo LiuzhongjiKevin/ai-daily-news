@@ -48,6 +48,7 @@ from ai_daily.models import (
 from ai_daily.news import prepare_news
 from ai_daily.render import RenderedDigest, render_digest
 from ai_daily.state import DeliveryIntentConflictError, DeliveryStateError, StateStore
+from ai_daily.translation import translate_digest
 
 
 class RunOptions(BaseModel):
@@ -390,6 +391,8 @@ class DailyPipeline:
                 usage=usage,
                 estimated_cost=float(cost.total),
             )
+            if options.send:
+                digest = translate_digest(digest)
             rendered = self.renderer(digest, cost, self.templates_dir)
             paths = self.write_outputs(local_date, rendered, cost)
             result.markdown_path = paths.markdown

@@ -234,6 +234,25 @@ def test_pipeline_generates_archives_sends_and_marks_beijing_date(tmp_path: Path
     assert result.estimated_cost == Decimal("0.000010")
 
 
+@pytest.mark.parametrize('send', [False, True])
+def test_tmt_only_runs_on_delivery_and_failure_does_not_block_mail(tmp_path, monkeypatch, send):
+    from ai_daily.pipeline import RunOptions
+    from ai_daily.translation import TmtTranslator
+
+    calls = []
+    def fail(request):
+        calls.append(request)
+        return httpx.Response(200, json={'Response': {'Error': {'Code': 'FailedOperation'}}})
+
+    monkeypatch.setattr(TmtTranslator, 'from_environment', lambda: TmtTranslator(
+        'fake-id', 'fake-key', client=httpx.Client(transport=httpx.MockTransport(fail))))
+    pipeline = make_pipeline(tmp_path)
+    result = pipeline.run(RunOptions(send=send))
+    assert result.sent is send
+    assert len(calls) == int(send)
+    assert 'A model launch' in result.markdown_path.read_text(encoding='utf-8')
+
+
 def test_already_sent_date_is_a_true_no_op(tmp_path: Path) -> None:
     """Would catch duplicate protection doing work or resending after a prior accepted Graph result."""
     from ai_daily.pipeline import RunOptions
