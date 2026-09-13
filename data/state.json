@@ -1,16 +1,11 @@
 {
-  "last_success_at": "2026-09-12T08:42:25.021183+08:00",
+  "last_success_at": "2026-09-13T08:26:24.812047+08:00",
   "sent_dates": {
     "2026-09-09": "accepted-e80f75281486ec90cd8c6437b4b474f81cd6b1abf0a35009f04ae5834e450c4a",
     "2026-09-10": "accepted-fbe6be506552fe62ee3d8ade5f35d07820151cb6b4aef5821510506536703f7a",
     "2026-09-11": "accepted-3db30c994533df9497f904b3c68e158d203eaf5518045af327e4cef88d416064",
-    "2026-09-12": "accepted-05be4255ce47636acc58988c06785359a23a646aa83a94bd4c92f6d36d2b6be2"
+    "2026-09-12": "accepted-05be4255ce47636acc58988c06785359a23a646aa83a94bd4c92f6d36d2b6be2",
+    "2026-09-13": "accepted-9e69c3118cb353b30dea82f6e05af49fdbef611d22f901f7ce38bfd71d66e19a"
   },
-  "delivery_intents": {
-    "2026-09-13": {
-      "attempt_id": "gh-34727946124-1",
-      "created_at": "2026-09-13T08:26:22.784761+08:00",
-      "status": "reserved"
-    }
-  }
+  "delivery_intents": {}
 }
