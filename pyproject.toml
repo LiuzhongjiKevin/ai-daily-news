@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "ai-daily-news"
 version = "0.1.0"
 description = "Private AI daily runner; supported from an editable repository checkout."
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
   "beautifulsoup4>=4.13,<5",
