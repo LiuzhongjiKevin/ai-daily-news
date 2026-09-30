@@ -1,5 +1,5 @@
 {
-  "last_success_at": "2026-09-29T10:20:17.252454+08:00",
+  "last_success_at": "2026-09-30T09:38:06.473734+08:00",
   "sent_dates": {
     "2026-09-09": "accepted-e80f75281486ec90cd8c6437b4b474f81cd6b1abf0a35009f04ae5834e450c4a",
     "2026-09-10": "accepted-fbe6be506552fe62ee3d8ade5f35d07820151cb6b4aef5821510506536703f7a",
@@ -21,13 +21,8 @@
     "2026-09-26": "accepted-83f3a22256c3aac220bc1f03d6e141c39e092d32f77cc6f743b8cece37fe0ee0",
     "2026-09-27": "accepted-aade410e032868198ebf0ed3ba728c34eb0dba4c876a138a053cbe4f6add77d6",
     "2026-09-28": "accepted-b4244efb04b5166d44ac950ce241ab0e39894179abe9951b57382b10a0a8f913",
-    "2026-09-29": "accepted-382124201e5e12b6f02c244cceeded9d0259419a243b9b7715a8fb66a4ff6c15"
+    "2026-09-29": "accepted-382124201e5e12b6f02c244cceeded9d0259419a243b9b7715a8fb66a4ff6c15",
+    "2026-09-30": "accepted-0a84eb4d8444a907c71b92d706f3c4ab285fffbde5c6a88cb40c8a4f966eae90"
   },
-  "delivery_intents": {
-    "2026-09-30": {
-      "attempt_id": "gh-36656004812-1",
-      "created_at": "2026-09-30T09:38:04.336426+08:00",
-      "status": "reserved"
-    }
-  }
+  "delivery_intents": {}
 }
