@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
 from ai_daily.collectors.base import (
@@ -54,7 +54,8 @@ class DiscoveryCollector:
                 continue
             url = article.get("url")
             title_value = article.get("title")
-            timestamp = article.get("seendate") or article.get("published_at")
+            # seendate is the discovery index time, not a verified publication date.
+            timestamp = article.get("published_at")
             if (
                 not isinstance(url, str)
                 or not isinstance(title_value, str)
@@ -82,7 +83,7 @@ class DiscoveryCollector:
             except (TypeError, ValueError):
                 continue
             valid_rows += 1
-            if published < cutoff:
+            if published < cutoff or published > end + timedelta(minutes=5):
                 continue
             rows.append(row)
         if articles and valid_rows == 0:
