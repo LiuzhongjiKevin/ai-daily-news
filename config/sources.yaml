@@ -27,8 +27,8 @@ sources:
 
   - {id: openai, name: OpenAI, kind: feed, source_type: official, url: "https://openai.com/news/rss.xml", language: en, category: company}
   - {id: anthropic, name: Anthropic, kind: page, page_format: anthropic_news, source_type: official, url: "https://www.anthropic.com/news", language: en, category: company, item_selector: "article", title_selector: "h2", link_selector: "a", date_selector: "time", excerpt_selector: "p", link_path_pattern: "^/news/"}
-  - {id: google-deepmind, name: "Google DeepMind", kind: page, source_type: official, url: "https://deepmind.google/discover/blog/", language: en, category: research, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p", link_path_pattern: "^/discover/blog/"}
-  - {id: google-ai, name: "Google AI", kind: page, source_type: official, url: "https://blog.google/technology/ai/", language: en, category: company, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p", link_path_pattern: "^/technology/ai/"}
+  - {id: google-deepmind, name: "Google DeepMind", kind: feed, source_type: official, url: "https://deepmind.google/blog/rss.xml", language: en, category: research, require_published_date: true, allowed_link_hosts: ["deepmind.google", "blog.google"]}
+  - {id: google-ai, name: "Google AI", kind: feed, source_type: official, url: "https://blog.google/innovation-and-ai/technology/ai/rss/", language: en, category: company, require_published_date: true, allowed_link_hosts: ["blog.google"]}
   - {id: meta-ai, name: "Meta AI", kind: page, source_type: official, url: "https://ai.meta.com/blog/", language: en, category: research, item_selector: "article", title_selector: "h2, h3", link_selector: "a", date_selector: "time", excerpt_selector: "p", link_path_pattern: "^/blog/"}
   # Verified 2026-08-24: the former /ai/ category path is a first-party 404;
   # this is the official WordPress feed for the Microsoft Blog.
@@ -57,14 +57,18 @@ sources:
   - {id: mit-tech-review, name: "MIT Technology Review", kind: feed, source_type: media, url: "https://www.technologyreview.com/feed/", language: en, category: research}
   - {id: hacker-news, name: "Hacker News", kind: feed, source_type: media, url: "https://hnrss.org/newest?q=AI", language: en, category: community}
 
+  # GDELT discovery disabled (2026-10-10): nine requests per run repeatedly
+  # returned 429, HTML or protocol failures. `seendate` is not a publish date.
+  # Reuters has no current public first-party news RSS. Retain these entries
+  # for future evaluation, but never use undated discovery items.
   # GDELT is discovery-only.  Each result is subsequently hostname-filtered against
   # the corresponding allowlist, so no unrelated GDELT story can enter the digest.
-  - {id: reuters-discovery, name: Reuters, kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: en, category: industry, allowed_domains: ["reuters.com"]}
-  - {id: jiqizhixin-discovery, name: "机器之心", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["jiqizhixin.com"]}
-  - {id: qbitai-discovery, name: "量子位", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["qbitai.com"]}
-  - {id: 36kr-discovery, name: "36氪", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["36kr.com"]}
-  - {id: aiera-discovery, name: "新智元", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["aiera.com.cn"]}
-  - {id: ithome-discovery, name: "IT之家", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["ithome.com"]}
-  - {id: cls-discovery, name: "财联社", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["cls.cn"]}
-  - {id: huxiu-discovery, name: "虎嗅", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["huxiu.com"]}
-  - {id: tmtpost-discovery, name: "钛媒体", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["tmtpost.com"]}
+  - {id: reuters-discovery, name: Reuters, kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: en, category: industry, allowed_domains: ["reuters.com"], enabled: false}
+  - {id: jiqizhixin-discovery, name: "机器之心", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["jiqizhixin.com"], enabled: false}
+  - {id: qbitai-discovery, name: "量子位", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["qbitai.com"], enabled: false}
+  - {id: 36kr-discovery, name: "36氪", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["36kr.com"], enabled: false}
+  - {id: aiera-discovery, name: "新智元", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["aiera.com.cn"], enabled: false}
+  - {id: ithome-discovery, name: "IT之家", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["ithome.com"], enabled: false}
+  - {id: cls-discovery, name: "财联社", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["cls.cn"], enabled: false}
+  - {id: huxiu-discovery, name: "虎嗅", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["huxiu.com"], enabled: false}
+  - {id: tmtpost-discovery, name: "钛媒体", kind: discovery, source_type: discovery, url: "https://api.gdeltproject.org/api/v2/doc/doc", language: zh, category: industry, allowed_domains: ["tmtpost.com"], enabled: false}
