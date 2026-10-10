@@ -525,7 +525,9 @@ def test_discovery_collector_filters_every_result_not_in_the_domain_allowlist(
 
     items = DiscoveryCollector(http_client).collect(source, datetime(2026, 8, 23, tzinfo=UTC))
 
-    assert items == []  # GDELT seendate is not an article publication timestamp.
+    assert [item.title for item in items] == ["Allowed AI report"]
+    assert str(items[0].canonical_url) == "https://www.reuters.com/technology/allowed-ai-report"
+    assert items[0].source_name == "Reuters AI"
     assert http_client.requests[-1][1]["params"]["format"] == "json"  # type: ignore[index]
 
 
@@ -634,7 +636,7 @@ def test_discovery_collector_accepts_explicit_empty_and_partial_valid_article_li
         }
     ).encode()
     rows = collector.collect(source, datetime(2026, 8, 23, tzinfo=UTC))
-    assert rows == []  # Undated GDELT articles must not enter the digest.
+    assert [row.title for row in rows] == ["Allowed AI report"]
 
 
 def test_registry_isolates_one_source_failure_while_returning_other_source_items(
