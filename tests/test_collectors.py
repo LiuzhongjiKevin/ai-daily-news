@@ -631,6 +631,7 @@ def test_discovery_collector_accepts_explicit_empty_and_partial_valid_article_li
                     "title": "Allowed AI report",
                     "url": "https://www.reuters.com/technology/allowed-ai-report",
                     "seendate": "20260824T110000Z",
+                    "published_at": "2026-08-24T11:00:00Z",
                 },
             ]
         }
