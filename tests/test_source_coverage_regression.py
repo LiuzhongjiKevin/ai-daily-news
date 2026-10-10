@@ -1,8 +1,8 @@
 """Regression tests for first-party feeds and GDELT discovery quality."""
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
-from pathlib import Path
 
 from ai_daily.collectors.base import CollectorRegistry, SourceConfig, load_sources
 from ai_daily.collectors.discovery import DiscoveryCollector
