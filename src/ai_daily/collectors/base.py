@@ -50,6 +50,7 @@ class SourceConfig(BaseModel):
     link_path_pattern: str | None = None
     allowed_domains: list[str] = Field(default_factory=list)
     allowed_link_hosts: list[str] = Field(default_factory=list)
+    require_published_date: bool = False
 
     @field_validator("allowed_link_hosts")
     @classmethod

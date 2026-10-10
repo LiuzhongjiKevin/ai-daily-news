@@ -631,6 +631,7 @@ def test_discovery_collector_accepts_explicit_empty_and_partial_valid_article_li
                     "title": "Allowed AI report",
                     "url": "https://www.reuters.com/technology/allowed-ai-report",
                     "seendate": "20260824T110000Z",
+                    "published_at": "2026-08-24T11:00:00Z",
                 },
             ]
         }
@@ -826,6 +827,12 @@ def test_configured_registry_covers_required_sources_with_unique_ids() -> None:
         "tmtpost-discovery",
     }
 
+    # Unstable GDELT entries remain in YAML but are intentionally disabled.
+    expected_ids -= {
+        "reuters-discovery", "jiqizhixin-discovery", "qbitai-discovery",
+        "36kr-discovery", "aiera-discovery", "ithome-discovery",
+        "cls-discovery", "huxiu-discovery", "tmtpost-discovery",
+    }
     assert expected_ids <= {source.id for source in sources}
     assert len({source.id for source in sources}) == len(sources)
     assert all(source.source_type and source.category for source in sources)
