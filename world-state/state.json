@@ -47,5 +47,11 @@
     "2026-10-22": "accepted-50e63265c47c3688d836089c1452e9bcced6be37e6c45757b579c9b52fed592b",
     "2026-10-23": "accepted-4911bc78e18fc10b45ca9a432cd4ec883c1f62d2ed8ff4c49b8c42f275ef57ef"
   },
-  "delivery_intents": {}
+  "delivery_intents": {
+    "2026-10-24": {
+      "attempt_id": "world-aecad098c0314f3cb41e5644d5c06d85",
+      "created_at": "2026-10-24T01:01:38.917264Z",
+      "status": "reserved"
+    }
+  }
 }
