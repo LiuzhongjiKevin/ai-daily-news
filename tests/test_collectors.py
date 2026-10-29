@@ -4,6 +4,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 
 from ai_daily.collectors.base import (
     CollectorRegistry,
@@ -816,6 +817,14 @@ def test_configured_registry_covers_required_sources_with_unique_ids() -> None:
         "venturebeat-ai",
         "mit-tech-review",
         "hacker-news",
+        "the-decoder",
+        "techmeme",
+        "simon-willison",
+        "qbitai",
+        "aiera",
+        "infoq-cn",
+        "tmtpost",
+        "ithome",
         "reuters-discovery",
         "jiqizhixin-discovery",
         "qbitai-discovery",
@@ -833,6 +842,12 @@ def test_configured_registry_covers_required_sources_with_unique_ids() -> None:
         "36kr-discovery", "aiera-discovery", "ithome-discovery",
         "cls-discovery", "huxiu-discovery", "tmtpost-discovery",
     }
+    # Failed in every archived digest through 2026-10-29; kept in YAML for re-evaluation.
+    expected_ids -= {
+        "glm-blog", "doubao", "wenxin", "hunyuan", "minimax", "stepfun", "baichuan",
+        "zero-one-ai", "sparkdesk", "modelscope", "meta-ai", "microsoft-ai", "perplexity",
+        "amd-ai", "intel-ai", "runway", "venturebeat-ai",
+    }
     assert expected_ids <= {source.id for source in sources}
     assert len({source.id for source in sources}) == len(sources)
     assert all(source.source_type and source.category for source in sources)
@@ -849,6 +864,15 @@ def test_kimi_and_glm_have_three_distinct_verified_first_party_channels() -> Non
     configured = {
         source.id: source for source in load_sources(Path("config/sources.yaml"))
     }
+    # z.ai/blog has been a first-party 404 since 2026-09-10; it stays in YAML, disabled.
+    assert "glm-blog" not in configured
+    configured["glm-blog"] = SourceConfig.model_validate(
+        next(
+            entry
+            for entry in yaml.safe_load(Path("config/sources.yaml").read_text("utf-8"))["sources"]
+            if entry["id"] == "glm-blog"
+        )
+    )
     expected = {
         "kimi-blog": (
             "page",
@@ -914,3 +938,60 @@ def test_kimi_and_glm_have_three_distinct_verified_first_party_channels() -> Non
         urlsplit(str(configured[source_id].url)).hostname
         for source_id in ("glm-blog", "glm-release-notes", "glm-5-releases")
     } == {"z.ai", "docs.z.ai", "github.com"}
+
+
+def test_feed_keyword_gate_and_boilerplate_excerpt_cleanup() -> None:
+    """Would catch general tech feeds admitting non-AI stories or hnrss link furniture."""
+    source = SourceConfig(
+        id="general", name="General", kind="feed", source_type="media",
+        url="https://general.test/feed.xml", language="zh", category="industry",
+        include_keywords=["ai", "大模型"],
+    )
+    xml = """<?xml version="1.0"?><rss version="2.0"><channel><title>T</title>
+    <item><title>AI写作工具发布</title><link>https://general.test/1</link>
+    <pubDate>Fri, 09 Oct 2026 08:00:00 GMT</pubDate>
+    <description>Article URL: https://x.test Comments URL: https://y.test Points: 200</description></item>
+    <item><title>国产大模型开源</title><link>https://general.test/2</link>
+    <pubDate>Fri, 09 Oct 2026 08:00:00 GMT</pubDate>
+    <description>Body text. The post X appeared first on General.</description></item>
+    <item><title>Maintain your new phone</title><link>https://general.test/3</link>
+    <pubDate>Fri, 09 Oct 2026 08:00:00 GMT</pubDate></item>
+    </channel></rss>""".encode()
+
+    class Client:
+        def get(self, url, **kwargs):
+            return httpx.Response(200, content=xml, request=httpx.Request("GET", url))
+
+    rows = FeedCollector(Client(), now=lambda: datetime(2026, 10, 10, tzinfo=UTC)).collect(
+        source, datetime(2026, 10, 8, tzinfo=UTC)
+    )
+
+    assert [(row.title, row.excerpt) for row in rows] == [
+        ("AI写作工具发布", ""),
+        ("国产大模型开源", "Body text."),
+    ]
+
+
+def test_github_prereleases_are_not_news() -> None:
+    """Would catch canary/nightly builds being ranked as model releases."""
+    source = SourceConfig(
+        id="kimi-code-releases", name="Kimi Code Releases", kind="github_releases",
+        source_type="release", url="https://github.com/MoonshotAI/kimi-code",
+        language="en", category="open_source",
+    )
+    releases = [
+        {"draft": False, "prerelease": True, "name": "v2.4.1-canary.1",
+         "html_url": "https://github.com/MoonshotAI/kimi-code/releases/canary",
+         "published_at": "2026-10-09T08:00:00Z"},
+        {"draft": False, "prerelease": False, "name": "v2.4.0",
+         "html_url": "https://github.com/MoonshotAI/kimi-code/releases/stable",
+         "published_at": "2026-10-09T07:00:00Z"},
+    ]
+
+    class Client:
+        def get(self, url, **kwargs):
+            return httpx.Response(200, json=releases, request=httpx.Request("GET", url))
+
+    rows = GitHubReleaseCollector(Client()).collect(source, datetime(2026, 10, 8, tzinfo=UTC))
+
+    assert [row.title for row in rows] == ["v2.4.0"]

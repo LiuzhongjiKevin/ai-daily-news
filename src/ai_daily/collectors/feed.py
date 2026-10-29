@@ -15,6 +15,19 @@ from ai_daily.collectors.base import (
 )
 from ai_daily.http import RetryingClient
 from ai_daily.models import RawItem
+from ai_daily.news import contains_any_keyword
+
+# Feed furniture that carries no story content: hnrss link listings and WordPress footers.
+_EXCERPT_BOILERPLATE = (
+    re.compile(r"^Article URL:.*$", re.DOTALL),
+    re.compile(r"\s*The post .+? appeared first on .+$", re.DOTALL),
+)
+
+
+def clean_excerpt(text: str) -> str:
+    for pattern in _EXCERPT_BOILERPLATE:
+        text = pattern.sub("", text)
+    return text.strip()
 
 
 def parse_entry_datetime(entry: Any, *, require_published: bool = False) -> datetime:
@@ -56,6 +69,10 @@ class FeedCollector:
                 continue
             if published < cutoff or published > latest or not title or not link:
                 continue
+            if source.include_keywords and not contains_any_keyword(
+                title, source.include_keywords
+            ):
+                continue
             canonical_url = urljoin(str(source.url), link)
             if source.allowed_link_hosts:
                 parsed_link = urlsplit(canonical_url)
@@ -74,13 +91,13 @@ class FeedCollector:
                     title=title,
                     published_at=published,
                     canonical_url=canonical_url,
-                    excerpt=re.sub(
+                    excerpt=clean_excerpt(re.sub(
                         r"\s+([.,;:!?])",
                         r"\1",
                         BeautifulSoup(entry.get("summary", ""), "html.parser").get_text(
                             " ", strip=True
                         ),
-                    ),
+                    )),
                     language=source.language,
                     category=source.category,
                 )

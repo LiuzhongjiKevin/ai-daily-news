@@ -3,11 +3,18 @@ from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 
-from ai_daily.collectors.base import PageParseError, load_sources
+from ai_daily.collectors.base import PageParseError, SourceConfig
 from ai_daily.collectors.page import PageCollector
 
-SOURCES = {s.id: s for s in load_sources(Path(__file__).parents[1] / "config/sources.yaml")}
+# Disabled page sources stay parsed here so their dedicated layout parsers keep coverage.
+SOURCES = {
+    entry["id"]: SourceConfig.model_validate(entry)
+    for entry in yaml.safe_load(
+        (Path(__file__).parents[1] / "config/sources.yaml").read_text("utf-8")
+    )["sources"]
+}
 CASES = [
     ("minimax", '<a href="/blog/model"><h3>Model</h3><span>2026-08-26</span></a>'),
     ("sensetime", ('<a href="/cn/news/model"><strong>Model</strong>'
@@ -26,7 +33,7 @@ CASES = [
      '<button>2026-08-26</button><p>Model</p><p>Details</p></div>')),
     ("deepseek", ('<article><h2 id="date">2026-08-26</h2><h3 id="model">Model</h3>'
      '<h2 id="older">2025-01-01</h2><h3 id="old-model">Old</h3></article>')),
-    ("anthropic", ('<a href="/news/model">Aug 26, 2026 Announcements '
+    ("anthropic-page", ('<a href="/news/model">Aug 26, 2026 Announcements '
      '<h3>Model</h3></a>')),
 ]
 

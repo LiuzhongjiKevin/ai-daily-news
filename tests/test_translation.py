@@ -142,3 +142,26 @@ def test_digest_translation_retains_source_items_and_does_not_mutate_original(mo
     assert result.news[0].items[0].canonical_url == item.canonical_url
     assert digest.news[0].title == 'News'
     assert any('机器翻译' in warning for warning in result.warnings)
+
+
+def test_labelled_offline_summary_translates_english_segments_and_reuses_title(monkeypatch):
+    """Would catch the Chinese labels marking the whole summary as mixed and skipping it."""
+    sources = []
+
+    def server(request):
+        text = json.loads(request.content)['SourceText']
+        sources.append(text)
+        return httpx.Response(200, json={'Response': {
+            'TargetText': {'Genie 4 ships': '精灵 4 发布', 'A new world model.': '新的世界模型。'}[text]}})
+
+    item = RawItem(source_id='dm', source_name='DeepMind', source_type='official',
+                   title='Genie 4 ships', canonical_url='https://example.com/genie',
+                   published_at=datetime.now(UTC))
+    digest = Digest(local_date='2026-10-29', repositories=[], news=[NewsCluster(
+        cluster_id='1', title='Genie 4 ships', trust_grade='A', items=[item],
+        summary='事件概述：Genie 4 ships。 来源摘要：A new world model.')])
+    service = translator(server)
+    monkeypatch.setattr(TmtTranslator, 'from_environment', lambda: service)
+    result = translate_digest(digest)
+    assert result.news[0].summary == '事件概述：精灵 4 发布。 来源摘要：新的世界模型。'
+    assert sources == ['Genie 4 ships', 'A new world model.']

@@ -322,6 +322,7 @@ class DailyPipeline:
                 self.settings.max_news_candidates,
                 min_score=self.settings.min_news_score,
                 now=local_now,
+                max_per_source=self.settings.max_news_per_source,
             )
             result.news_candidate_count = len(candidates)
             try:

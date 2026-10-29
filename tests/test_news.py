@@ -357,9 +357,10 @@ def test_score_threshold_filters_routine_single_media_but_keeps_major_and_offici
         now=NOW,
     )
 
+    # A fresh security story (12 + 20 + 30) now outranks a routine official post (25 + 5 + 30).
     assert [cluster.title for cluster in clusters] == [
-        "Quarterly organization update",
         "Critical model security breach disclosed",
+        "Quarterly organization update",
     ]
     assert all(cluster.score >= 40 for cluster in clusters)
 
@@ -374,8 +375,9 @@ def test_score_threshold_is_inclusive_at_the_boundary() -> None:
         category="research",
     )
 
-    assert len(prepare_news([row], min_score=45, now=NOW)) == 1
-    assert prepare_news([row], min_score=45.01, now=NOW) == []
+    # Media trust 12 + research 15 + full recency 30.
+    assert len(prepare_news([row], min_score=57, now=NOW)) == 1
+    assert prepare_news([row], min_score=57.01, now=NOW) == []
 
 
 def test_discovery_publishers_count_as_media_evidence_without_becoming_official() -> None:
@@ -524,3 +526,75 @@ def test_equal_score_clusters_are_stably_sorted_by_cluster_id() -> None:
 def test_empty_input_returns_no_clusters() -> None:
     """Would catch empty collection runs producing a fabricated news event."""
     assert prepare_news([]) == []
+
+
+def test_corroborated_media_story_outranks_lone_official_post() -> None:
+    """Would catch first-party trust alone outranking an event several publishers covered."""
+    clusters = prepare_news(
+        [
+            item("vendor", "official", "Vendor ships model update", "https://vendor.test/update"),
+            item("one", "media", "Acme raises funding round", "https://one.test/acme"),
+            item("two", "media", "Acme raises funding round", "https://two.test/acme"),
+        ],
+        now=NOW,
+    )
+
+    assert clusters[0].title == "Acme raises funding round"
+    assert clusters[0].trust_grade == "B"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Exowatt beats frontier models with SageMaker serverless customization",
+        "Retell uses OpenAI models to help power 100M monthly calls",
+        "AWS named a Leader in the 2026 Gartner Magic Quadrant",
+        "How to fine-tune a model in five minutes",
+        "量子位早报：今日模型动态",
+    ],
+)
+def test_marketing_titles_rank_below_a_media_model_story(title: str) -> None:
+    """Would catch tutorials, customer stories and roundups outranking real model news."""
+    clusters = prepare_news(
+        [
+            item("vendor", "official", title, "https://vendor.test/post"),
+            item("media", "media", "Lab releases new open model", "https://media.test/model"),
+        ],
+        now=NOW,
+    )
+
+    assert [cluster.title for cluster in clusters] == ["Lab releases new open model", title]
+
+
+def test_per_source_cap_limits_single_source_clusters_but_not_corroborated_ones() -> None:
+    """Would catch one prolific blog filling the digest, or corroboration counting against it."""
+    rows = [
+        item("aws", "official", title, f"https://aws.test/{number}")
+        for number, title in enumerate(
+            ("Nova reasoning model", "Quasar coding assistant", "Helix speech API", "Orion chip")
+        )
+    ]
+    rows.append(item("aws", "official", "Acme acquires Beta", "https://aws.test/acme"))
+    rows.append(item("media", "media", "Acme acquires Beta", "https://media.test/acme"))
+
+    clusters = prepare_news(rows, now=NOW, max_per_source=2)
+
+    single = [cluster for cluster in clusters if len(cluster.items) == 1]
+    assert len(single) == 2
+    assert any(cluster.title == "Acme acquires Beta" for cluster in clusters)
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Parents sue OpenAI over GPT-4o advice", "regulation"),
+        ("家长起诉 OpenAI，称 GPT-4o 误导用药", "regulation"),
+        ("Acme launches a voice assistant", "product"),
+        ("百度推出新版搜索", "product"),
+    ],
+)
+def test_lawsuits_and_launches_classify_before_model_mentions(title: str, expected: str) -> None:
+    """Would catch a lawsuit naming a model being labelled a model release."""
+    row = item("media", "media", title, "https://media.test/x", category="industry")
+
+    assert prepare_news([row], now=NOW)[0].items[0].category == expected

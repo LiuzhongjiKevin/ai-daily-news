@@ -129,6 +129,23 @@ class TmtTranslator:
             return self._keep_original(text, 'provider_error')
 
 
+# Chinese labels added by OffEnricher; without splitting on them the whole summary counts as
+# "mixed Chinese" and its English excerpt is never translated.
+_SUMMARY_LABELS = re.compile(r'(事件概述：|来源摘要：)')
+
+
+def _translate_summary(service, summary):
+    pieces = []
+    for piece in _SUMMARY_LABELS.split(summary):
+        core = piece.strip().rstrip('。').strip()
+        if not core or _SUMMARY_LABELS.fullmatch(piece):
+            pieces.append(piece)
+        else:
+            # The overview segment repeats the title, so it is served from the title cache.
+            pieces.append(piece.replace(core, service.translate(core), 1))
+    return ''.join(pieces)
+
+
 def translate_digest(digest: Digest) -> Digest:
     service = TmtTranslator.from_environment()
     if service is None:
@@ -137,7 +154,7 @@ def translate_digest(digest: Digest) -> Digest:
     with service:
         for cluster in result.news:
             cluster.title = service.translate(cluster.title)
-            cluster.summary = service.translate(cluster.summary)
+            cluster.summary = _translate_summary(service, cluster.summary)
         for repo in result.repositories:
             repo.snapshot.description = service.translate(repo.snapshot.description)
         if service.translated:

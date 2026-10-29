@@ -82,7 +82,7 @@ QQ 授权码失效时只需更新 `SMTP_PASSWORD`，无需 Azure、客户端 ID 
   ```text
   gh api --method POST repos/OWNER/REPO/dispatches -f event_type=ai-daily-validate-sources -F 'client_payload[minimum_success]=80'
   ```
-- Kimi 至少使用 `www.kimi.com` 官方研究/新闻博客、`platform.kimi.com` API 平台更新和 `MoonshotAI/kimi-code` GitHub Releases；GLM 至少使用 `z.ai` 研究博客、`docs.z.ai` 发布说明和 `zai-org/GLM-5` GitHub Releases。三类通道彼此独立，某个页面结构失效只产生该来源警告。不要凭猜测增加 RSS；新增或更换端点后先运行离线 fixture/schema 测试，再单独执行人工 live 来源验证。
+- Kimi 至少使用 `www.kimi.com` 官方研究/新闻博客、`platform.kimi.com` API 平台更新和 `MoonshotAI/kimi-code` GitHub Releases；GLM 使用 `docs.z.ai` 发布说明和 `zai-org/GLM-5` GitHub Releases（`z.ai` 研究博客自 2026-09-10 起返回 404，保留为停用配置）。综合类科技 RSS 用 `include_keywords` 按标题关键词过滤，GitHub Releases 跳过 `prerelease`。三类通道彼此独立，某个页面结构失效只产生该来源警告。不要凭猜测增加 RSS；新增或更换端点后先运行离线 fixture/schema 测试，再单独执行人工 live 来源验证。
 - Page 适配器默认只接收与配置页面完全同源的链接和最终响应；确需跳转到另一个官方 host 时，必须在来源配置中用 `allowed_link_hosts` 精确列出 HTTPS host，路径正则仍同时生效。GitHub 榜单会排除 API 明确标记或描述明确声明的镜像，并把存在完整七日基线且单周增长超过 1,000,000 Star 的数据作为极端异常排除；正常高增长项目仍保留。排除原因只以聚合、脱敏警告展示。
 - 运行 `python scripts/check_secrets.py` 可检查已配置且非空的六项 Secret（包括 `AI_DAILY_STATE_TOKEN`）是否意外出现在已跟踪文件。输出只包含变量名与路径，不回显值。
 - 若 Microsoft 授权失效，在 Microsoft 账户的“应用和服务”中**撤销**该应用同意，然后重新走设备授权。轮换 `MS_TOKEN_KEY` 时，先停用计划、生成新 Fernet 密钥，运行 `python scripts/setup_outlook.py --replace` 写入新加密缓存，再将新缓存和新 `MS_TOKEN_KEY` Secret 一起更新并手动无发送验证；若不同步，旧缓存无法用新密钥解密是预期现象，恢复方式是用新密钥再次 `--replace` 授权。
