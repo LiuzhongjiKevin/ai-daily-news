@@ -285,7 +285,8 @@ class GitHubReleaseCollector:
             except (TypeError, ValueError):
                 continue
             valid_rows += 1
-            if release["draft"]:
+            # Canary/nightly builds are flagged prerelease and are not reader-facing news.
+            if release["draft"] or release.get("prerelease") is True:
                 continue
             if published < cutoff:
                 continue

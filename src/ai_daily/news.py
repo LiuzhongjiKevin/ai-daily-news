@@ -8,11 +8,46 @@ from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from rapidfuzz.fuzz import token_set_ratio
+from rapidfuzz.utils import default_process
 
 from ai_daily.models import NewsCluster, RawItem
 
 TRACKING_PARAMETERS = {"spm", "from", "ref"}
-TRUST_POINTS = {"A": 40, "B": 25, "C": 10}
+# Independent corroboration (B) outranks a lone first-party post (A); a single vendor blog
+# entry must earn its place through category and freshness rather than trust alone.
+TRUST_POINTS = {"A": 25, "B": 30, "C": 12}
+RECENCY_POINTS = 30.0
+RECENCY_WINDOW_HOURS = 36.0
+COVERAGE_POINTS_PER_PUBLISHER = 8
+COVERAGE_POINTS_CAP = 16
+NOISE_PENALTY = 30
+# Tutorials, customer stories, analyst-report brags and roundups are publisher marketing,
+# not events. Patterns run against normalize_text(title).
+NOISE_TITLE_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"^how to\b",
+        r"^build(?:ing)? (?:a|an|your)\b",
+        r"\btutorial\b",
+        r"\bstep[- ]by[- ]step\b",
+        r"\bbest practices\b",
+        r"\bgetting started\b",
+        r"\bcase study\b",
+        r"\bcustomer stor(?:y|ies)\b",
+        r"\bwebinar\b",
+        r"\b(?:named|recognized as) a leader\b",
+        r"\bmagic quadrant\b",
+        r"\broundup\b",
+        r"\bthis week in\b",
+        r"\bweekly\b",
+        r"\bnewsletter\b",
+        r"\bsponsored\b",
+        r"\buses [\w.-]+(?: [\w.-]+)? (?:to|for)\b",
+        # AWS ML blog headlines naming these services are solution walkthroughs, not news.
+        r"\b(?:bedrock|sagemaker)\b",
+        r"教程|直播|报名|招聘|早报|晚报|周报|日报|周刊",
+    )
+)
 CATEGORY_POINTS = {
     "model": 25,
     "product": 25,
@@ -33,7 +68,8 @@ SOURCE_CATEGORY_ALIASES = {
     "open-source": "open_source",
     "open source": "open_source",
 }
-MULTIPART_PUBLIC_SUFFIXES = frozenset({"co.jp", "co.uk", "com.au", "com.br", "com.cn", "com.sg"})
+CLASSIFY_EXCERPT_CHARS = 200
+MULTIPART_PUBLIC_SUFFIXES =frozenset({"co.jp", "co.uk", "com.au", "com.br", "com.cn", "com.sg"})
 
 # Specific risk/transaction events win over broad technical nouns in the same headline.
 # Within the technical group, evidence-bearing categories precede generic model/product terms.
@@ -46,7 +82,11 @@ CATEGORY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("funding", ("funding", "financing", "fundraise", "fundraising", "raises", "raised", "融资", "募资")),
     (
         "regulation",
-        ("regulation", "regulations", "regulator", "regulatory", "policy", "law", "监管", "政策", "法案", "条例"),
+        (
+            "regulation", "regulations", "regulator", "regulatory", "policy", "law",
+            "lawsuit", "lawsuits", "sue", "sues", "sued", "court",
+            "监管", "政策", "法案", "条例", "起诉", "诉讼",
+        ),
     ),
     (
         "security",
@@ -59,7 +99,11 @@ CATEGORY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("model", ("model", "models", "llm", "llms", "gpt", "claude", "gemini", "模型", "大模型")),
     (
         "product",
-        ("product", "products", "feature", "features", "app", "apps", "assistant", "产品", "功能", "应用", "助手"),
+        (
+            "product", "products", "feature", "features", "app", "apps", "assistant",
+            "launch", "launches", "launched", "unveils", "introduces", "introducing", "rolls out",
+            "产品", "功能", "应用", "助手", "发布", "推出", "上线",
+        ),
     ),
 )
 
@@ -75,12 +119,25 @@ def _contains_keyword(text: str, keyword: str) -> bool:
     return re.search(rf"(?<![a-z0-9]){re.escape(keyword)}(?![a-z0-9])", text) is not None
 
 
+def contains_any_keyword(text: str, keywords: list[str]) -> bool:
+    """Match bilingual keywords; ASCII keywords must stand as whole words."""
+    normalized = normalize_text(text)
+    return any(_contains_keyword(normalized, normalize_text(keyword)) for keyword in keywords)
+
+
 def classify_event_category(item: RawItem) -> str:
-    """Classify one event from bilingual evidence, using source taxonomy only as fallback."""
-    evidence = normalize_text(f"{item.title}\n{item.excerpt}")
-    for category, keywords in CATEGORY_KEYWORDS:
-        if any(_contains_keyword(evidence, keyword) for keyword in keywords):
-            return category
+    """Classify one event from bilingual evidence, using source taxonomy only as fallback.
+
+    The headline decides first; the excerpt's opening is consulted only when the headline has
+    no signal, because full-text Chinese feeds mention incidental terms such as 上市 in the body.
+    """
+    for evidence in (
+        normalize_text(item.title),
+        normalize_text(item.excerpt[:CLASSIFY_EXCERPT_CHARS]),
+    ):
+        for category, keywords in CATEGORY_KEYWORDS:
+            if any(_contains_keyword(evidence, keyword) for keyword in keywords):
+                return category
     source_category = normalize_text(item.category)
     alias = SOURCE_CATEGORY_ALIASES.get(source_category, source_category.replace("-", "_"))
     return alias if alias in CANONICAL_EVENT_CATEGORIES else "other"
@@ -147,7 +204,11 @@ def _fuzzy_match(first: RawItem, second: RawItem) -> bool:
     return (
         first.category == second.category
         and _within_cluster_window(first, second)
-        and token_set_ratio(normalize_text(first.title), normalize_text(second.title)) >= 82
+        # default_process drops punctuation so "Gemini 4 Carbon:" still matches "Gemini 4 Carbon".
+        and token_set_ratio(
+            normalize_text(first.title), normalize_text(second.title), processor=default_process
+        )
+        >= 82
     )
 
 
@@ -234,13 +295,24 @@ def grade_cluster(items: list[RawItem]) -> Literal["A", "B", "C"]:
     return "B" if len(publisher_domains) >= 2 else "C"
 
 
+def is_noise_title(title: str) -> bool:
+    normalized = normalize_text(title)
+    return any(pattern.search(normalized) for pattern in NOISE_TITLE_PATTERNS)
+
+
 def score_cluster(cluster: NewsCluster, now: datetime) -> float:
-    """Score one cluster with source trust, category importance, and a 36-hour age decay."""
+    """Score trust, category, a 36-hour age decay, publisher coverage, and a noise penalty."""
     newest = max(_utc(item.published_at) for item in cluster.items)
     age_hours = max(0.0, (_utc(now) - newest).total_seconds() / 3600)
-    recency = max(0.0, 20.0 * (1.0 - age_hours / 36.0))
+    recency = max(0.0, RECENCY_POINTS * (1.0 - age_hours / RECENCY_WINDOW_HOURS))
     category = max(CATEGORY_POINTS.get(item.category, 5) for item in cluster.items)
-    return TRUST_POINTS[cluster.trust_grade] + category + recency
+    publishers = {_publisher_domain(str(item.canonical_url)) for item in cluster.items}
+    publishers.discard("")
+    coverage = min(
+        COVERAGE_POINTS_CAP, COVERAGE_POINTS_PER_PUBLISHER * max(0, len(publishers) - 1)
+    )
+    noise = NOISE_PENALTY if all(is_noise_title(item.title) for item in cluster.items) else 0
+    return TRUST_POINTS[cluster.trust_grade] + category + recency + coverage - noise
 
 
 def prepare_news(
@@ -249,8 +321,13 @@ def prepare_news(
     *,
     min_score: float = 0.0,
     now: datetime | None = None,
+    max_per_source: int | None = None,
 ) -> list[NewsCluster]:
-    """Create a stably ordered, capped set of verified news clusters."""
+    """Create a stably ordered, capped set of verified news clusters.
+
+    `max_per_source` bounds single-source clusters per source so one prolific blog cannot
+    fill the digest; corroborated multi-source clusters are never counted against it.
+    """
     scoring_time = now or datetime.now(UTC)
     normalized_items = [
         item.model_copy(update={"category": classify_event_category(item)}) for item in items
@@ -274,4 +351,16 @@ def prepare_news(
             cluster.cluster_id,
         )
     )
+    if max_per_source is not None:
+        per_source: dict[str, int] = {}
+        diverse: list[NewsCluster] = []
+        for cluster in clusters:
+            source_ids = {item.source_id for item in cluster.items}
+            if len(source_ids) == 1:
+                (source_id,) = source_ids
+                if per_source.get(source_id, 0) >= max_per_source:
+                    continue
+                per_source[source_id] = per_source.get(source_id, 0) + 1
+            diverse.append(cluster)
+        clusters = diverse
     return clusters[:max(0, limit)]

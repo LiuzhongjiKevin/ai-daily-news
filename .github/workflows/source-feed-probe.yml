@@ -4,7 +4,8 @@ on:
   pull_request:
     paths:
       - config/sources.yaml
-      - src/ai_daily/collectors/feed.py
+      - src/ai_daily/collectors/**
+      - src/ai_daily/http.py
       - scripts/probe_official_feeds.py
       - .github/workflows/source-feed-probe.yml
 
@@ -14,7 +15,7 @@ permissions:
 jobs:
   live-feeds:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -27,3 +28,7 @@ jobs:
       - run: python -m pip install --no-deps --no-build-isolation -e .
       - name: Probe dated first-party Google feeds (no email or secrets)
         run: python scripts/probe_official_feeds.py
+      # Same check as the Validate AI Daily Sources dispatch, but against the PR's own
+      # sources.yaml, so new endpoints are proven from a GitHub runner before merge.
+      - name: Validate all enabled sources (no email or secrets)
+        run: ai-daily validate-sources --minimum-success 80

@@ -51,6 +51,8 @@ class SourceConfig(BaseModel):
     allowed_domains: list[str] = Field(default_factory=list)
     allowed_link_hosts: list[str] = Field(default_factory=list)
     require_published_date: bool = False
+    # Feed-only title gate for general tech publishers; empty accepts every entry.
+    include_keywords: list[str] = Field(default_factory=list)
 
     @field_validator("allowed_link_hosts")
     @classmethod

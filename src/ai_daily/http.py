@@ -2,12 +2,19 @@ import time
 
 import httpx
 
+USER_AGENT = "ai-daily-news/0.1 (+https://github.com/LiuzhongjiKevin/ai-daily-news)"
+
 
 class RetryingClient:
     def __init__(self, max_attempts: int = 3, backoff_seconds: float = 1.0) -> None:
         self.max_attempts = max_attempts
         self.backoff_seconds = backoff_seconds
-        self._client = httpx.Client(timeout=httpx.Timeout(20.0), follow_redirects=True)
+        # Some publishers (e.g. qbitai.com) reject the default python-httpx agent with 403.
+        self._client = httpx.Client(
+            timeout=httpx.Timeout(20.0),
+            follow_redirects=True,
+            headers={"User-Agent": USER_AGENT},
+        )
 
     def get(self, url: str, **kwargs) -> httpx.Response:
         last_error: Exception | None = None
