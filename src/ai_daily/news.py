@@ -43,7 +43,8 @@ NOISE_TITLE_PATTERNS = tuple(
         r"\bnewsletter\b",
         r"\bsponsored\b",
         r"\buses [\w.-]+(?: [\w.-]+)? (?:to|for)\b",
-        r"\b(?:on|with|using|in) (?:amazon |aws )?(?:bedrock|sagemaker)\b",
+        # AWS ML blog headlines naming these services are solution walkthroughs, not news.
+        r"\b(?:bedrock|sagemaker)\b",
         r"教程|直播|报名|招聘|早报|晚报|周报|日报|周刊",
     )
 )

@@ -547,6 +547,7 @@ def test_corroborated_media_story_outranks_lone_official_post() -> None:
     "title",
     [
         "Exowatt beats frontier models with SageMaker serverless customization",
+        "Accelerate agentic AI with Nemotron models on Amazon EKS and SageMaker HyperPod",
         "Retell uses OpenAI models to help power 100M monthly calls",
         "AWS named a Leader in the 2026 Gartner Magic Quadrant",
         "How to fine-tune a model in five minutes",
