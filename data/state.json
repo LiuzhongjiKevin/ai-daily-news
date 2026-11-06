@@ -60,5 +60,11 @@
     "2026-11-04": "accepted-b5f63c8c6601d932ce7b095f22d09c7571a26a0eda6075698a8552504b706f1e",
     "2026-11-05": "accepted-1b6ad9d3e871abc7cea4890dc7648d5ab352243343944794a172d349596b769d"
   },
-  "delivery_intents": {}
+  "delivery_intents": {
+    "2026-11-06": {
+      "attempt_id": "gh-42152957849-1",
+      "created_at": "2026-11-06T10:51:54.166411+08:00",
+      "status": "reserved"
+    }
+  }
 }
