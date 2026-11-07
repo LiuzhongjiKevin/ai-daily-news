@@ -1,5 +1,5 @@
 {
-  "last_success_at": "2026-11-06T02:48:16.238904Z",
+  "last_success_at": "2026-11-07T02:20:49.750378Z",
   "sent_dates": {
     "2026-09-09": "accepted-b7f3f8407cf98b9c71172d1e3bb9d1012e1876420e7b82218eda5c3961e9bc7d",
     "2026-09-10": "accepted-cc9ce52ddea5c693c577970a6f0bd1dc97cd504e1a808b3ebacebbd572a7dab9",
@@ -59,13 +59,8 @@
     "2026-11-03": "accepted-75cff6c3cc93b62deaa05c0fbb9cb7188f94376ad191dd2c8197a4da0f8c18b0",
     "2026-11-04": "accepted-9da9a0f2898eeac67e62d204223e70a6f0c466544a93673e99b96e30920070bd",
     "2026-11-05": "accepted-a7f4a266da66cb2d7be5941cfe4985cf2f4cc995c55dc4c9324e648e00d1be55",
-    "2026-11-06": "accepted-a2b636eeb9d956848b481b289b73f3fa10993fd83d87c5c3666f0e6b84e76239"
+    "2026-11-06": "accepted-a2b636eeb9d956848b481b289b73f3fa10993fd83d87c5c3666f0e6b84e76239",
+    "2026-11-07": "accepted-6676e29bb83f114a5b2cd01b352f030dcbc18d27a3d0410596b461e7953d03fa"
   },
-  "delivery_intents": {
-    "2026-11-07": {
-      "attempt_id": "world-e420cd718497441ca80f5c990170b6ce",
-      "created_at": "2026-11-07T02:20:28.924776Z",
-      "status": "reserved"
-    }
-  }
+  "delivery_intents": {}
 }
