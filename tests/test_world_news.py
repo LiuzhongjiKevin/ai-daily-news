@@ -65,12 +65,15 @@ def test_each_story_is_a_separate_email_card_with_original_below_title():
     from bs4 import BeautifulSoup
 
     class Translator:
+        notice = '采用阿里云通用机器翻译'
         def translate(self, text):
             return '中文 <script>不可信</script>'
 
     rendered = render_world([item('Trade agreement', 1), item('Oil market', 2, 'finance')],
                             NOW, [], translator=Translator())
     document = BeautifulSoup(rendered.html, 'html.parser')
+    assert '阿里云' in rendered.text
+    assert '腾讯' not in rendered.text
     cards = document.select('table.news-card')
     assert len(cards) == 2
     for card, original in zip(cards, ('Trade agreement', 'Oil market'), strict=True):

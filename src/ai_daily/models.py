@@ -89,6 +89,9 @@ class DeliveryIntent(BaseModel):
 
 
 class RunState(BaseModel):
+    # Persist the opaque ledger even when translation is disabled. Strict budget
+    # validation happens before spending; never silently discard/reset this field.
+    translation_budget: dict[str, object] | None = None
     last_success_at: datetime | None = None
     sent_dates: dict[str, str] = Field(default_factory=dict)
     delivery_intents: dict[str, DeliveryIntent] = Field(default_factory=dict)

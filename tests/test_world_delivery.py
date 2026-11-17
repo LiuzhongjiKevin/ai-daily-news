@@ -77,7 +77,8 @@ def test_one_publisher_is_not_enough_to_send(tmp_path):
 
 
 @pytest.mark.parametrize('fails', [False, True])
-def test_optional_translation_is_delivery_only_and_can_fail_open(tmp_path, monkeypatch, fails):
+def test_world_delivery_never_falls_back_to_tencent(tmp_path, monkeypatch, fails):
+    monkeypatch.delenv('WORLD_ALIBABA_TRANSLATION_ENABLED', raising=False)
     from ai_daily.translation import TmtTranslator
     from ai_daily.world_news import render_world
 
@@ -97,9 +98,9 @@ def test_optional_translation_is_delivery_only_and_can_fail_open(tmp_path, monke
             return 'accepted-tmt-test'
 
     assert deliver(tmp_path, rows(), NOW, [], Mailer(), lambda: None) == 'accepted'
-    assert len(requests) == 1  # same title is translated once, or circuit opens on failure
+    assert len(requests) == 0
     assert 'Trade peace' in sent[0].text  # preserve original title even on success
-    assert ('贸易和平' in sent[0].text) is not fails
+    assert '贸易和平' not in sent[0].text
     assert 'https://example.com/bbc-world' in sent[0].text
     assert deliver(tmp_path, rows(), NOW, [], Mailer(), lambda: None) == 'already_sent'
-    assert len(requests) == 1
+    assert len(requests) == 0

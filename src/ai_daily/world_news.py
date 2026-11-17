@@ -91,7 +91,7 @@ def render_world(items: list[RawItem], now: datetime, diagnostics: list[dict], *
     start = (local - timedelta(hours=24)).strftime("%m-%d %H:%M")
     end = local.strftime("%m-%d %H:%M")
     failed = sum(row["status"] == "failed" for row in diagnostics)
-    translation_note = ("尝试腾讯云机器翻译，以原文为准；未翻译或翻译失败的内容保留原文。"
+    translation_note = (getattr(translator, "notice", "机器翻译，以原文为准。")
                         if translator is not None else "原文标题与短摘要，未自动翻译。")
     note = (f"采集窗口：{start}—{end}（北京时间）。{translation_note}"
             f"来源检查 {len(diagnostics)} 个，失败 {failed} 个。"

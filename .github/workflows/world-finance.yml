@@ -75,6 +75,7 @@ jobs:
         with:
           ref: ${{ needs.preview.outputs.source_sha }}
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
         with:
           python-version: '3.12'
@@ -83,8 +84,10 @@ jobs:
       - name: Send using dedicated state and dedicated recipient list
         env:
           WORLD_FINANCE_ENVIRONMENT: world-finance-production
-          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
-          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+          WORLD_ALIBABA_TRANSLATION_ENABLED: ${{ vars.WORLD_ALIBABA_TRANSLATION_ENABLED }}
+          WORLD_TRANSLATION_LEDGER_ANCHOR: ${{ vars.WORLD_TRANSLATION_LEDGER_ANCHOR }}
+          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
+          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}

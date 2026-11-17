@@ -6,7 +6,6 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ai_daily.translation import TmtTranslator
 from ai_daily.world_finance import collect, world_mailer
 from ai_daily.world_news import publisher, render_world
 
@@ -15,10 +14,7 @@ def send_debug(root, items, now, diagnostics, mailer):
     if len({publisher(item) for item in items}) < 2:
         raise ValueError('At least two publishers are required')
     rendered = render_world(items, now, diagnostics)
-    translator = TmtTranslator.from_environment()
-    if translator is not None:
-        with translator:
-            rendered = render_world(items, now, diagnostics, translator=translator)
+    # No durable budget checkpoint in debug mode: never call a paid translator.
     rendered = replace(rendered, subject=f'[调试发送] {rendered.subject}')
     output = root / 'world-debug'
     output.mkdir(exist_ok=True)

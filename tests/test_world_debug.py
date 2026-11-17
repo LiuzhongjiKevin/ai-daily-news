@@ -6,6 +6,19 @@ from ai_daily.models import RawItem
 from ai_daily.world_debug import send_debug
 
 
+def test_debug_never_bypasses_durable_translation_budget(tmp_path, monkeypatch):
+    from ai_daily.translation import TmtTranslator
+    monkeypatch.setattr(TmtTranslator, "from_environment",
+                        lambda: pytest.fail("Legacy billable translation is forbidden"))
+    class Mailer:
+        def send(self, rendered):
+            assert "Trade peace" in rendered.text
+            return "accepted-debug-test"
+    assert send_debug(tmp_path, rows(), datetime(2026, 11, 17, tzinfo=UTC),
+                      [], Mailer()) == "accepted"
+
+
+
 def rows():
     return [RawItem(source_id=source, source_name=source, source_type='media', title='Trade peace',
                     canonical_url=f'https://example.com/{source}', category='world',
