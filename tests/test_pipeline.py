@@ -235,17 +235,15 @@ def test_pipeline_generates_archives_sends_and_marks_beijing_date(tmp_path: Path
 
 
 @pytest.mark.parametrize('send', [False, True])
-def test_tmt_only_runs_on_delivery_and_failure_does_not_block_mail(tmp_path, monkeypatch, send):
+def test_translation_only_runs_on_delivery_and_original_fallback_keeps_mail(tmp_path, monkeypatch, send):
+    import ai_daily.pipeline as module
     from ai_daily.pipeline import RunOptions
-    from ai_daily.translation import TmtTranslator
 
     calls = []
-    def fail(request):
-        calls.append(request)
-        return httpx.Response(200, json={'Response': {'Error': {'Code': 'FailedOperation'}}})
-
-    monkeypatch.setattr(TmtTranslator, 'from_environment', lambda: TmtTranslator(
-        'fake-id', 'fake-key', client=httpx.Client(transport=httpx.MockTransport(fail))))
+    def fallback(digest):
+        calls.append(True)
+        return digest
+    monkeypatch.setattr(module, 'translate_digest', fallback)
     pipeline = make_pipeline(tmp_path)
     result = pipeline.run(RunOptions(send=send))
     assert result.sent is send

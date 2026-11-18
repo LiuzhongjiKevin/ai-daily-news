@@ -7,6 +7,10 @@ on:
         description: '发送正式邮件（不勾选则只预览；Branch 请选择 master）'
         type: boolean
         default: false
+      translation_probe:
+        description: 'Run one approved Hello. translation without mail; leave send unchecked'
+        type: boolean
+        default: false
   repository_dispatch:
     types: [world-finance-preview, world-finance-send]
   schedule:
@@ -37,6 +41,9 @@ jobs:
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
     steps:
+      - name: Reject conflicting manual actions
+        if: inputs.send == true && inputs.translation_probe == true
+        run: exit 1
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ github.event_name == 'push' && github.sha || 'world-finance-daily' }}
@@ -52,9 +59,10 @@ jobs:
       - run: python -m ruff check .
       - run: python -m pytest -m 'not live'
       - name: Collect public feeds and render without mail credentials
+        if: inputs.translation_probe != true
         run: python -m ai_daily.world_finance preview
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: always()
+        if: always() && inputs.translation_probe != true
         with:
           name: world-finance-preview
           path: world-preview/
@@ -63,7 +71,7 @@ jobs:
   send:
     needs: preview
     if: >-
-      github.ref == 'refs/heads/master' &&
+      github.ref == 'refs/heads/master' && inputs.translation_probe != true &&
       ((github.event_name == 'schedule' && vars.WORLD_FINANCE_SCHEDULE_ENABLED == 'true') ||
       (github.event_name == 'repository_dispatch' && github.event.action == 'world-finance-send') ||
       (github.event_name == 'workflow_dispatch' && inputs.send == true))
@@ -75,6 +83,7 @@ jobs:
         with:
           ref: ${{ needs.preview.outputs.source_sha }}
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
         with:
           python-version: '3.12'
@@ -83,8 +92,10 @@ jobs:
       - name: Send using dedicated state and dedicated recipient list
         env:
           WORLD_FINANCE_ENVIRONMENT: world-finance-production
-          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
-          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+          WORLD_ALIBABA_TRANSLATION_ENABLED: ${{ vars.WORLD_ALIBABA_TRANSLATION_ENABLED }}
+          WORLD_TRANSLATION_LEDGER_ANCHOR: ${{ vars.WORLD_TRANSLATION_LEDGER_ANCHOR }}
+          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
+          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
@@ -98,3 +109,34 @@ jobs:
             world-preview/
             world-state/state.json
           retention-days: 7
+
+  translation_probe:
+    needs: preview
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/master' &&
+      inputs.translation_probe == true && inputs.send != true
+    environment: world-finance-production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.preview.outputs.source_sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-prod.lock
+      - run: python -m pip install --no-deps --no-build-isolation -e .
+      - name: Reserve six units and verify one public sample without mail
+        env:
+          WORLD_FINANCE_ENVIRONMENT: world-finance-production
+          WORLD_ALIBABA_PROBE_APPROVED: 'true'
+          WORLD_ALIBABA_TRANSLATION_ENABLED: 'true'
+          WORLD_TRANSLATION_LEDGER_ANCHOR: ${{ vars.WORLD_TRANSLATION_LEDGER_ANCHOR }}
+          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
+          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
+          WORLD_FINANCE_STATE_TOKEN: ${{ secrets.WORLD_FINANCE_STATE_TOKEN }}
+        run: python -m ai_daily.world_probe

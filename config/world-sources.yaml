@@ -1,0 +1,8 @@
+sources:
+  - {id: bbc-world, name: BBC World, kind: feed, source_type: media, language: en, category: world, url: 'https://feeds.bbci.co.uk/news/world/rss.xml'}
+  - {id: bbc-business, name: BBC Business, kind: feed, source_type: media, language: en, category: finance, url: 'https://feeds.bbci.co.uk/news/business/rss.xml'}
+  - {id: guardian-world, name: Guardian World, kind: feed, source_type: media, language: en, category: world, url: 'https://www.theguardian.com/world/rss'}
+  - {id: guardian-business, name: Guardian Business, kind: feed, source_type: media, language: en, category: finance, url: 'https://www.theguardian.com/business/rss'}
+  - {id: fed-press, name: Federal Reserve, kind: feed, source_type: official, language: en, category: finance, url: 'https://www.federalreserve.gov/feeds/press_all.xml'}
+  - {id: ecb-press, name: European Central Bank, kind: feed, source_type: official, language: en, category: finance, url: 'https://www.ecb.europa.eu/rss/press.html'}
+  - {id: un-world, name: UN News, kind: feed, source_type: official, language: en, category: world, url: 'https://news.un.org/feed/subscribe/en/news/all/rss.xml'}

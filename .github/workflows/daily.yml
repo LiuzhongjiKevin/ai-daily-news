@@ -156,6 +156,16 @@ jobs:
         env:
           AI_DAILY_STATE_TOKEN: ${{ secrets.AI_DAILY_STATE_TOKEN }}
         run: python scripts/push_production_state.py
+      - name: Checkout shared translation ledger
+        if: >-
+          steps.reserve.outputs.reservation_status == 'reserved' &&
+          vars.AI_ALIBABA_TRANSLATION_ENABLED == 'true'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: world-finance-daily
+          path: .translation-ledger
+          fetch-depth: 0
+          persist-credentials: false
       - name: Run daily digest
         id: digest
         if: >-
@@ -163,8 +173,12 @@ jobs:
           (steps.reserve.outputs.reservation_status == 'reserved' ||
           steps.reserve.outputs.reservation_status == 'already_sent')
         env:
-          TENCENTCLOUD_SECRET_ID: ${{ secrets.TENCENTCLOUD_SECRET_ID }}
-          TENCENTCLOUD_SECRET_KEY: ${{ secrets.TENCENTCLOUD_SECRET_KEY }}
+          WORLD_FINANCE_ENVIRONMENT: ai-daily-production
+          WORLD_ALIBABA_TRANSLATION_ENABLED: ${{ vars.AI_ALIBABA_TRANSLATION_ENABLED }}
+          WORLD_TRANSLATION_LEDGER_ANCHOR: ${{ vars.WORLD_TRANSLATION_LEDGER_ANCHOR }}
+          ALIBABA_CLOUD_ACCESS_KEY_ID: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_ID }}
+          ALIBABA_CLOUD_ACCESS_KEY_SECRET: ${{ secrets.ALIBABA_CLOUD_ACCESS_KEY_SECRET }}
+          WORLD_FINANCE_STATE_TOKEN: ${{ secrets.AI_DAILY_STATE_TOKEN }}
           MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
           MAIL_PROVIDER: qq
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}

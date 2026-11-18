@@ -38,6 +38,9 @@ def _git_environment(token: str) -> dict[str, str] | None:
     environment = dict(os.environ)
     environment.pop("AI_DAILY_STATE_TOKEN", None)
     environment.pop("GITHUB_TOKEN", None)
+    environment.pop("AI_MEMORY_AUTH_TOKEN", None)
+    environment.pop("ALIBABA_CLOUD_ACCESS_KEY_ID", None)
+    environment.pop("ALIBABA_CLOUD_ACCESS_KEY_SECRET", None)
     environment.update(
         {
             "GIT_CONFIG_COUNT": "1",
