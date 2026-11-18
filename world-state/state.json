@@ -73,5 +73,17 @@
     "2026-11-17": "accepted-a530213b6bc4c5bd108e19a3aeb2aed5f20487c52d199f9b131aaa4a11819567",
     "2026-11-18": "accepted-444328cee3d07d0e454bad9a9c18b1e78aa75caf77ca40f317f64fc8b425cb45"
   },
-  "delivery_intents": {}
+  "delivery_intents": {},
+  "translation_budget": {
+    "version": 1,
+    "months": {
+      "2026-11": {
+        "month": "2026-11",
+        "limit": 300000,
+        "baseline": 100000,
+        "reserved": 100000,
+        "reservations": {}
+      }
+    }
+  }
 }

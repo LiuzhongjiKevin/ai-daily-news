@@ -16,6 +16,7 @@ from dateutil.tz import gettz
 from pydantic import BaseModel, Field
 
 from ai_daily.ai import AIEnrichmentError
+from ai_daily.ai_alibaba import translate_digest
 from ai_daily.collectors.base import (
     CollectorRegistry,
     SourceCollectionBatch,
@@ -48,7 +49,6 @@ from ai_daily.models import (
 from ai_daily.news import prepare_news
 from ai_daily.render import RenderedDigest, render_digest
 from ai_daily.state import DeliveryIntentConflictError, DeliveryStateError, StateStore
-from ai_daily.translation import translate_digest
 
 
 class RunOptions(BaseModel):

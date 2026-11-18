@@ -39,6 +39,7 @@ def test_daily_uses_all_reviewed_action_pins() -> None:
     assert [step["uses"] for step in daily_steps if "uses" in step] == [
         "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
         "actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38",
+        "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
         "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
     ]
     assert [step["uses"] for step in preview_steps if "uses" in step] == [
@@ -436,7 +437,7 @@ def test_manual_controls_use_default_branch_repository_dispatch_only() -> None:
 
     assert all("workflow_dispatch" not in workflow[True]
                for name, workflow in workflows.items()
-               if name not in {"world-finance.yml", "world-finance-debug.yml"})
+               if name not in {"ai-translation-probe.yml", "world-finance.yml", "world-finance-debug.yml"})
     world = workflows["world-finance.yml"]
     manual = world[True]["workflow_dispatch"]["inputs"]["send"]
     assert manual["type"] == "boolean" and manual["default"] is False
@@ -512,8 +513,9 @@ def test_trusted_cost_preview_and_delivery_have_disjoint_authority() -> None:
     assert "ai-daily preview" in preview_run["run"]
     assert "--send" not in preview_run["run"]
     assert set(delivery_run["env"]) == {
-        "TENCENTCLOUD_SECRET_ID",
-        "TENCENTCLOUD_SECRET_KEY",
+        "WORLD_FINANCE_ENVIRONMENT", "WORLD_ALIBABA_TRANSLATION_ENABLED",
+        "WORLD_TRANSLATION_LEDGER_ANCHOR", "WORLD_FINANCE_STATE_TOKEN",
+        "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
         "MAIL_PROVIDER",
         "SMTP_USERNAME",
         "SMTP_PASSWORD",
@@ -581,6 +583,15 @@ def test_builtin_tokens_are_read_only_and_state_token_is_confined_to_write_jobs(
                 if identity in allowed_steps:
                     assert step["env"] == {"AI_DAILY_STATE_TOKEN": state_token}
                     assert step["run"] == "python scripts/push_production_state.py"
+                elif identity in {
+                    ("daily.yml", "daily", "Run daily digest"),
+                    ("ai-translation-probe.yml", "probe",
+                     "Verify AI adapter with six reserved units and no mail"),
+                }:
+                    assert job["environment"] == "ai-daily-production"
+                    assert step["env"]["WORLD_FINANCE_STATE_TOKEN"] == state_token
+                    assert "AI_DAILY_STATE_TOKEN" not in step["env"]
+                    assert "--force" not in step["run"] or identity[0] == "daily.yml"
                 else:
                     assert "AI_DAILY_STATE_TOKEN" not in str(step)
                     assert state_token not in str(step)
@@ -633,7 +644,6 @@ def test_production_checkouts_are_pinned_and_state_credentials_are_ephemeral() -
             for step in job["steps"]:
                 if "actions/upload-artifact@" in step.get("uses", "") or step.get("name") in {
                     "Run trusted cost preview",
-                    "Run daily digest",
                     "Run deterministic safe preview",
                 }:
                     assert "AI_DAILY_STATE_TOKEN" not in str(step)

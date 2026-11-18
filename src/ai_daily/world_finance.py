@@ -223,8 +223,9 @@ def deliver(root, items, now, diagnostics, mailer, checkpoint):
 def checkpoint_state(root):
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("Durable delivery requires the dedicated GitHub workflow")
-    if os.environ.get("WORLD_FINANCE_ENVIRONMENT") != "world-finance-production":
-        raise RuntimeError("Dedicated world-finance environment is required")
+    if os.environ.get("WORLD_FINANCE_ENVIRONMENT") not in {
+            "world-finance-production", "ai-daily-production"}:
+        raise RuntimeError("Dedicated translation environment is required")
 
     def git(*args, **kwargs):
         return _git(root, *args, **kwargs)
