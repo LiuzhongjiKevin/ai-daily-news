@@ -261,3 +261,20 @@ def test_two_competing_git_reservations_only_one_can_spend(tmp_path, monkeypatch
         grants[1].confirm(world.checkpoint_state(copies[1]))
     assert grants[0].consume("Trade", NOW)
     assert not grants[1].consume("Trade", NOW)
+
+
+def test_protection_permission_failure_has_safe_numeric_diagnostic(monkeypatch):
+    from ai_daily.world_translation_budget import BudgetUnavailable
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
+    monkeypatch.setenv("WORLD_FINANCE_STATE_TOKEN", "fake-state")
+    client = httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(
+        403, json={"message": "private token and headers must not be logged"})))
+    with pytest.raises(BudgetUnavailable, match="^budget_guard_http_403$"):
+        world.verify_append_only_protection(client=client)
+
+
+def test_budget_diagnostic_rejects_unknown_exception_content():
+    from ai_daily.world_translation_budget import BudgetUnavailable, safe_error_code
+    assert safe_error_code(RuntimeError("private signed response")) == "unavailable"
+    assert safe_error_code(BudgetUnavailable("fake-secret")) == "unavailable"
+    assert safe_error_code(BudgetUnavailable("budget_guard_http_403")) == "budget_guard_http_403"

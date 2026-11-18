@@ -157,3 +157,20 @@ def reserve(store, manifest, now, run_id, run_attempt):
         state.translation_budget = budget
         store._save_run_state_unlocked(state)
     return Grant(manifest, month)
+
+
+def safe_error_code(error):
+    """Only known internal codes; never stringify arbitrary provider/git errors."""
+    allowed = {
+        "budget_guard_debug", "budget_guard_auth", "budget_guard_unprotected",
+        "budget_guard_unverified", "budget_history_unverified", "budget_anchor_missing",
+        "budget_history_shallow", "budget_stale_checkout", "budget_history_merge",
+        "budget_local_mismatch", "budget_invalid", "budget_month_unapproved",
+        "budget_run_already_reserved", "budget_exhausted", "budget_request_invalid",
+        "budget_history_missing", "budget_rollback", "budget_checkpoint_unconfirmed",
+        "probe_not_authorized", "probe_credentials_unavailable",
+        *(f"budget_guard_http_{status}" for status in (400, 401, 403, 404, 429, 500, 502, 503)),
+    }
+    if isinstance(error, BudgetUnavailable) and error.args and error.args[0] in allowed:
+        return error.args[0]
+    return "unavailable"

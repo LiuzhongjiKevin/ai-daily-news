@@ -16,7 +16,7 @@ def translate_digest(digest, *, ledger_root=None):
     from ai_daily import world_finance as world
     from ai_daily.state import StateStore
     from ai_daily.world_alibaba import AlibabaTranslator
-    from ai_daily.world_translation_budget import make_manifest, reserve
+    from ai_daily.world_translation_budget import make_manifest, reserve, safe_error_code
 
     if (os.environ.get('GITHUB_ACTIONS') != 'true'
             or os.environ.get('GITHUB_REF') != 'refs/heads/master'
@@ -51,6 +51,6 @@ def translate_digest(digest, *, ledger_root=None):
             if service.translated:
                 result.warnings.append(service.notice)
         return result
-    except Exception:  # noqa: BLE001 - no response, credential, git output or exception details
-        print('AI Alibaba translation: unavailable; keeping original text.')
+    except Exception as error:  # noqa: BLE001 - only allowlisted internal diagnostics
+        print('AI Alibaba translation: unavailable; code=' + safe_error_code(error))
         return digest

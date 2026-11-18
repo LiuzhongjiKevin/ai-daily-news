@@ -7,7 +7,12 @@ from pathlib import Path
 from ai_daily import world_finance as world
 from ai_daily.state import StateStore
 from ai_daily.world_alibaba import AlibabaTranslator
-from ai_daily.world_translation_budget import BudgetUnavailable, make_manifest, reserve
+from ai_daily.world_translation_budget import (
+    BudgetUnavailable,
+    make_manifest,
+    reserve,
+    safe_error_code,
+)
 
 SAMPLE = "Hello."
 
@@ -48,7 +53,8 @@ def main():
         print("Alibaba probe: " + json.dumps(report, sort_keys=True))
         return 0 if report["status"] == "translated" else 1
     except Exception as error:  # noqa: BLE001 - do not emit provider/credential/response content
-        print(f"Alibaba probe stopped: {type(error).__name__}; no automatic retry.")
+        print(f"Alibaba probe stopped: {type(error).__name__}; "
+              f"code={safe_error_code(error)}; no automatic retry.")
         return 1
 
 
