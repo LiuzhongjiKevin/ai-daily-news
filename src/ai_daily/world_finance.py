@@ -107,6 +107,8 @@ def verify_budget_history(root):
         validate_history(snapshots)
         if StateStore(root / "world-state").load_run_state().translation_budget != snapshots[-1]:
             raise BudgetUnavailable("budget_local_mismatch")
+    except BudgetUnavailable:
+        raise
     except Exception:  # noqa: BLE001 - no git output or state content in logs
         raise BudgetUnavailable("budget_history_unverified") from None
 
@@ -139,6 +141,10 @@ def verify_append_only_protection(*, client=None):
                 or body.get("allow_force_pushes", {}).get("enabled") is not False
                 or body.get("allow_deletions", {}).get("enabled") is not False):
             raise BudgetUnavailable("budget_guard_unprotected")
+    except httpx.HTTPStatusError as error:
+        raise BudgetUnavailable(f"budget_guard_http_{error.response.status_code}") from None
+    except BudgetUnavailable:
+        raise
     except Exception:  # noqa: BLE001 - no headers, response bodies or provider messages
         raise BudgetUnavailable("budget_guard_unverified") from None
     finally:
