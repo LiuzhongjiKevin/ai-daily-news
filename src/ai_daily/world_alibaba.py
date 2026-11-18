@@ -6,6 +6,7 @@ import http.client
 import json
 import logging
 import os
+import re
 import time
 from collections import Counter
 from datetime import UTC, datetime
@@ -20,6 +21,20 @@ from ai_daily.world_translation_budget import safe_month, units
 ENDPOINT = "https://mt.cn-hangzhou.aliyuncs.com/"
 KEY_NAMES = ("ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET")
 NOTICE = "采用阿里云通用机器翻译，以原文为准；未翻译或翻译失败的内容保留原文。"
+
+
+def safe_response_code(raw):
+    """Return only bounded numbers or fixed gateway labels, never arbitrary response text."""
+    if type(raw) is int and (100 <= raw <= 599 or 10000 <= raw <= 19999):
+        return str(raw)
+    if isinstance(raw, str):
+        if re.fullmatch(r"[1-5][0-9]{2}|1[0-9]{4}", raw):
+            return raw
+        if raw in {"Forbidden", "Forbidden.RAM", "NoPermission", "AccessDenied",
+                   "InvalidAccessKeyId.NotFound", "SignatureDoesNotMatch",
+                   "InvalidTimeStamp.Expired", "Throttling", "ServiceUnavailable"}:
+            return raw
+    return "missing" if raw is None else "other"
 
 
 def http_debug_enabled():
@@ -107,13 +122,16 @@ class AlibabaTranslator:
                         ENDPOINT, content=urlencode(params),
                         headers={"Content-Type": "application/x-www-form-urlencoded"},
                         timeout=min(5, remaining / 4), follow_redirects=False)
-                    response.raise_for_status()
-                    body = response.json()
+                    try:
+                        body = response.json()
+                    except ValueError:
+                        body = None
                     code = body.get("Code") if isinstance(body, dict) else None
-                    if type(code) is not int or code != 200:
-                        # Only bounded numeric business codes, never Message/RequestId/raw body.
-                        reason = f"business_{code}" if type(code) is int and (
-                            10000 <= code <= 19999) else "business_error"
+                    label = safe_response_code(code)
+                    kind = "string" if isinstance(code, str) else "integer" if type(code) is int else "other"
+                    self.reasons[f"http_{response.status_code}_code_{kind}_{label}"] += 1
+                    if not response.is_success or label != "200":
+                        reason = "business_error" if response.is_success else "http_error"
                         self._failed = True
                     else:
                         data = body.get("Data")

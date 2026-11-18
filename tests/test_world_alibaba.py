@@ -20,7 +20,8 @@ def service(handler, text="Trade rises 5%", clock=lambda: NOW):
         client=httpx.Client(transport=httpx.MockTransport(handler)), clock=clock)
 
 
-def test_official_rpc_request_and_success():
+@pytest.mark.parametrize("success_code", [200, "200"])
+def test_official_rpc_request_and_success(success_code):
     def handler(request):
         assert str(request.url) == "https://mt.cn-hangzhou.aliyuncs.com/"
         params = parse_qs(request.content.decode())
@@ -34,7 +35,7 @@ def test_official_rpc_request_and_success():
         assert params["AccessKeyId"] == ["fake-id"]
         assert params["SignatureMethod"] == ["HMAC-SHA1"]
         assert params["Signature"][0]
-        return httpx.Response(200, json={"Code": 200, "Message": "success",
+        return httpx.Response(200, json={"Code": success_code, "Message": "success",
             "RequestId": "example", "Data": {"Translated": "贸易增长5%", "WordCount": 14}})
     with service(handler) as translator:
         assert translator.translate("Trade rises 5%") == "贸易增长5%"
@@ -60,7 +61,7 @@ def test_official_rpc_signature_vector():
 @pytest.mark.parametrize("payload", [
     {"Code": 10013, "Message": "fake-secret SOURCE private provider text"},
     {"Code": 200, "Data": {"Translated": ""}},
-    {"Code": "200", "Data": {"Translated": "贸易增长5%"}},
+    {"Code": "0200", "Data": {"Translated": "贸易增长5%"}},
     {"Code": 200, "Data": []},
     {"Data": {"Translated": "贸易增长5%"}},
 ])
@@ -72,6 +73,24 @@ def test_business_error_and_malformed_response_fall_back_without_leaks(payload, 
     output = capsys.readouterr().out
     for forbidden in ("fake-secret", "fake-id", "SOURCE", "Trade rises", "private provider"):
         assert forbidden not in output
+
+
+@pytest.mark.parametrize(("status", "code", "marker"), [
+    (403, "Forbidden.RAM", "http_403_code_string_Forbidden.RAM"),
+    (403, "200", "http_403_code_string_200"),
+    (200, "10013", "http_200_code_string_10013"),
+    (200, "private-detail", "http_200_code_string_other"),
+    (200, True, "http_200_code_other_other"),
+])
+def test_failure_metadata_is_allowlisted_and_stops_requests(status, code, marker, capsys):
+    body = {"Code": code, "Message": "private-detail", "Data": {"Translated": "贸易增长5%"}}
+    with service(lambda _: httpx.Response(status, json=body)) as translator:
+        assert translator.translate("Trade rises 5%") == "Trade rises 5%"
+        assert translator.translate("Other title") == "Other title"
+        assert translator.calls == 1
+    output = capsys.readouterr().out
+    assert marker in output and "circuit_open" in output
+    assert "private-detail" not in output
 
 
 def test_numeric_difference_keeps_original():
