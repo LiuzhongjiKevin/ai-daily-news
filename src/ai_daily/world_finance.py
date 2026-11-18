@@ -142,6 +142,10 @@ def verify_append_only_protection(*, client=None):
                 or body.get("allow_deletions", {}).get("enabled") is not False):
             raise BudgetUnavailable("budget_guard_unprotected")
     except httpx.HTTPStatusError as error:
+        if error.response.status_code == 403 and _verify_graphql_protection(
+                transport, repository, token):
+            print("Translation protection: verified via GraphQL.")
+            return
         raise BudgetUnavailable(f"budget_guard_http_{error.response.status_code}") from None
     except BudgetUnavailable:
         raise
@@ -150,6 +154,44 @@ def verify_append_only_protection(*, client=None):
     finally:
         if owned:
             transport.close()
+
+
+
+def _verify_graphql_protection(transport, repository, token):
+    """An alternative official read API, not an exception to any protection requirement.
+
+    Some content-scoped tokens cannot read the REST admin endpoint. Accept only
+    the exact branch's complete active rule, including no force-push bypasses.
+    No permissions are changed; any inaccessible/partial/error result stays closed.
+    """
+    query = """query($owner:String!,$name:String!,$ref:String!){
+      repository(owner:$owner,name:$name){ref(qualifiedName:$ref){name branchProtectionRule{
+        pattern isAdminEnforced allowsForcePushes allowsDeletions
+        bypassForcePushAllowances(first:1){totalCount}
+      }}}
+    }"""
+    try:
+        owner, name = repository.split("/")
+        response = transport.post(
+            "https://api.github.com/graphql",
+            headers={"Authorization": f"Bearer {token}",
+                     "Accept": "application/vnd.github+json"},
+            json={"query": query, "variables": {
+                "owner": owner, "name": name, "ref": f"refs/heads/{BRANCH}"}},
+            timeout=5, follow_redirects=False)
+        response.raise_for_status()
+        body = response.json()
+        if body.get("errors"):
+            return False
+        ref = body["data"]["repository"]["ref"]
+        rule = ref["branchProtectionRule"]
+        count = rule["bypassForcePushAllowances"]["totalCount"]
+        return (ref["name"] == BRANCH and rule["pattern"] == BRANCH
+                and rule["isAdminEnforced"] is True
+                and rule["allowsForcePushes"] is False and rule["allowsDeletions"] is False
+                and type(count) is int and count == 0)
+    except Exception:  # noqa: BLE001 - no raw API errors, responses or headers
+        return False
 
 
 def collect(root, now):
