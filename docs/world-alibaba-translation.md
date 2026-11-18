@@ -40,7 +40,7 @@ StateStore 显式保存 translation_budget；最多 300000/月。reserved 必须
 limit 可低于 300000；baseline 是已消耗或需保守扣除的本程序预算额度，reserved 初值等于 baseline。只有已确认本程序没有旧调用且可分配免费余量充足时才允许 baseline=0。未知时保持关闭。不可删除/退款旧月份，新的月份也需人工核验后显式添加。
 
 6. 初始化提交成功后的完整 40 位 SHA 存为 Environment variable WORLD_TRANSLATION_LEDGER_ANCHOR。待审查/小样完成，最后将 WORLD_ALIBABA_TRANSLATION_ENABLED 设为 true。变量不存在、只有密钥或账本不存在都不会调用阿里。
-7. 用户已允许保护就绪后一次最小公开短句真实验证，本次尚未执行。小样也必须先走同一远程预算预留，建议 Hello.，保守预留 6 单元；不发送邮件，不用无账本的 curl/SDK 示例。当前未新增无保护 probe 入口；后续须使用受审查的单次无邮件入口，核对阿里控制台实际扣额。
+7. 已增加 `python -m ai_daily.world_probe` 受保护的无邮件入口。仅接受手动 workflow_dispatch、master、专用 environment 和明确小样批准；固定 `Hello.`，先通过相同历史/分支保护核验，远程持久化预留 6 单元并确认提交后，才做一次 TranslateGeneral。超时/失败不重试不退款，同一 run 重跑拒绝。launcher 手动勾选 `translation_probe`、保持 `send` 不勾选；二者同选会失败。小样任务只在本步骤启用翻译，不修改生产启用变量，不注入邮件 Secret、不抓取新闻、不更改邮件状态。当前尚未推送或真实调用。
 8. 小样、账本和预览都通过后开启正式日报，不补发当天邮件。检查次日启动、翻译数量、持久状态、SMTP accepted；accepted 不等于独立验证收件箱送达。
 
 ## 故障处理与回退
@@ -62,3 +62,15 @@ budget/history/protection 不可核验：保留原文，不调用腾讯、不重
 - 定价：https://help.aliyun.com/zh/machine-translation/product-overview/pricing-of-machine-translation-general-purpose-edition
 
 国内通用版主账号每月 100 万免费字符，RAM 共享；超额自动后付费 50 元/百万，显示延迟约一小时。未找到可关闭后付费的官方硬开关，零余额也不能保证不欠费。程序的 300000 上限只是本程序消费控制。
+
+## 2026-11-17 后续准备与额度口径
+
+用户要求不再查看控制台，并说明本月免费总额度为 100 万字符。这是总额，不是已核实余量；本轮不据此写入 baseline=0，也不初始化线上账本。
+
+无需控制台的可行确认是用户基于自身使用记录提供：本月截至当前的累计使用上限（包括同主账号/RAM/其他程序）、本程序是否已有旧调用，以及愿意独占分配给本程序的字符数 B。B 不超过 300000，并需满足已知总额减已用上限减其他程序预留及统计延迟余量至少为 B。只有确认本程序无旧调用时，才可在人工审核初始化中设 limit=B、baseline=reserved=0；有旧调用则按保守估计写入 baseline，并使 baseline+B 不超过 300000。无法确认时继续关闭，不用总额替代余量，不用向下修改旧 baseline 的方式解锁。
+
+最小小样占用 6 单元，也不能豁免上述预留；可仅批准极小初始预算，但当月 limit/baseline 按现有规则不可上调/回退，因此若后续要正式发送，应在首次初始化前确认完整当月分配方案。所有失败/取消均不退款。
+
+本地小样新增 23 项测试；完整 Python 3.12 离线测试 547 通过、1 项 live 排除，Ruff 通过。Git 子进程另行剔除 AI_MEMORY_AUTH_TOKEN；测试进程通过 OS 变量白名单隔离真实凭据。以上不代表真实 API、GitHub runner 或生产邮件验证。
+
+已在任务目录准备 `world-finance-master-launcher.patch`，基于本地 origin/master 的 da9195293c7653794e7fad1d3b89224ef3f750eb，包含两个财经 workflow 的对应迁移改动；在仅含基线 workflow 的临时目录应用并逐文件比对通过。没有切换/修改 master，也没有新建重复仓库。正式上线前需重新核对远端 master 与财经状态 tip，审核后分别提交 launcher 与财经代码；不要把整个财经分支合入 AI master。

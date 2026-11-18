@@ -40,6 +40,7 @@ def _git_environment(authenticated=False):
                    if not k.startswith(("GIT_CONFIG_", "GIT_TRACE", "GIT_CURL_VERBOSE"))}
     for name in ("WORLD_FINANCE_STATE_TOKEN", "SMTP_USERNAME", "SMTP_PASSWORD", "MAIL_TO",
                  "TENCENTCLOUD_SECRET_ID", "TENCENTCLOUD_SECRET_KEY", "GITHUB_TOKEN",
+                 "AI_MEMORY_AUTH_TOKEN",
                  "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET"):
         environment.pop(name, None)
     environment["GIT_TERMINAL_PROMPT"] = "0"

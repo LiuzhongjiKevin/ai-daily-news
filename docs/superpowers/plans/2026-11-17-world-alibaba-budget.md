@@ -16,3 +16,10 @@ Constraints: 300000 monthly maximum; no Tencent fallback, retry, HTTP debug or s
 Later authorization permits one minimal public-text live sample and deployment only after safeguards are ready. Secrets names verified; no values read. Deployment remains blocked: actual branch-protection endpoint returns Branch not protected, and shared-account remaining free quota has not been established. No ledger initialized, no real translation or email sent, no push. Candidate workflow maps new credentials only in send and remains disabled without the explicit Environment variable; production is unchanged.
 
 Review focus: stale checkout/rewritten ledger; call crossing Shanghai month boundary; same run with incremented attempt; reservations retained after cancellation; raw provider errors or request signatures escaping into logs. Tests must pin each behavior. Administrative deletion of the ledger and all history cannot be detected from that same repository alone: require protected append-only history and explain this trust boundary rather than claim absolute protection from account-owner rewrites.
+
+
+## Follow-up: protected no-mail sample and launcher (2026-11-17)
+
+Implemented fixed Hello. probe through the existing history/protection guard, six-unit durable reservation and confirmed checkpoint; no mail/feeds, no retries/refunds/run reuse. Added explicit manual-only workflow input and mutually exclusive probe job, exact preview SHA, existing concurrency and no SMTP secrets. Production switch remains unchanged. Added AI Memory credential stripping from Git child processes and ran tests with only necessary OS environment variables.
+
+Red/green evidence: missing probe module failed before implementation; missing workflow input failed before launcher change; two credential-stripping tests failed before adding the removal. Follow-up tests: 23 probe cases pass; full Python 3.12 suite 547 passed / 1 live deselected; Ruff passes. Master launcher patch checked and reconstructed against local origin/master in a temporary workflow-only fixture. No push, deployment, real translation or mail.

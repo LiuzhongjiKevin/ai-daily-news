@@ -97,9 +97,11 @@ def test_new_alibaba_keys_are_removed_from_shared_git_push_environment(monkeypat
     spec.loader.exec_module(module)
     monkeypatch.setenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "fake-id")
     monkeypatch.setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "fake-secret")
+    monkeypatch.setenv("AI_MEMORY_AUTH_TOKEN", "fake-memory-token")
     env = module._git_environment("fake-token")
     present = any(key in env for key in (
-        "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET"))
+        "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
+        "AI_MEMORY_AUTH_TOKEN"))
     assert not present
 
 
@@ -192,7 +194,7 @@ def test_unverified_budget_sends_original_without_provider(tmp_path, monkeypatch
 
 def test_all_git_subprocesses_strip_translation_credentials(tmp_path, monkeypatch):
     for key in ("ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
-                "TENCENTCLOUD_SECRET_ID", "TENCENTCLOUD_SECRET_KEY"):
+                "TENCENTCLOUD_SECRET_ID", "TENCENTCLOUD_SECRET_KEY", "AI_MEMORY_AUTH_TOKEN"):
         monkeypatch.setenv(key, "must-not-reach-git")
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     monkeypatch.setenv("WORLD_FINANCE_ENVIRONMENT", "world-finance-production")
