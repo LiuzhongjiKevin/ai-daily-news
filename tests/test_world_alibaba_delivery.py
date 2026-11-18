@@ -278,3 +278,40 @@ def test_budget_diagnostic_rejects_unknown_exception_content():
     assert safe_error_code(RuntimeError("private signed response")) == "unavailable"
     assert safe_error_code(BudgetUnavailable("fake-secret")) == "unavailable"
     assert safe_error_code(BudgetUnavailable("budget_guard_http_403")) == "budget_guard_http_403"
+
+
+@pytest.mark.parametrize("invalid", [None, "admin", "force", "delete", "bypass", "errors"])
+def test_graphql_read_verifies_same_complete_protection_after_rest_denied(monkeypatch, invalid):
+    import json
+
+    from ai_daily.world_translation_budget import BudgetUnavailable
+    monkeypatch.setenv("GITHUB_REPOSITORY", "example/repo")
+    monkeypatch.setenv("WORLD_FINANCE_STATE_TOKEN", "fake-state")
+    rule = {"pattern": "world-finance-daily", "isAdminEnforced": True,
+            "allowsForcePushes": False, "allowsDeletions": False,
+            "bypassForcePushAllowances": {"totalCount": 0}}
+    if invalid == "admin": rule["isAdminEnforced"] = False
+    if invalid == "force": rule["allowsForcePushes"] = True
+    if invalid == "delete": rule["allowsDeletions"] = True
+    if invalid == "bypass": rule["bypassForcePushAllowances"]["totalCount"] = 1
+    body = {"data": {"repository": {"ref": {"name": "world-finance-daily",
+                                             "branchProtectionRule": rule}}}}
+    if invalid == "errors": body["errors"] = [{"message": "private secret"}]
+    methods = []
+    def handler(request):
+        methods.append(request.method)
+        if request.method == "GET":
+            return httpx.Response(403, json={"message": "private secret"})
+        assert str(request.url) == "https://api.github.com/graphql"
+        payload = json.loads(request.content)
+        assert payload["variables"] == {"owner": "example", "name": "repo",
+                                        "ref": "refs/heads/world-finance-daily"}
+        assert "mutation" not in payload["query"]
+        return httpx.Response(200, json=body)
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    if invalid is None:
+        world.verify_append_only_protection(client=client)
+    else:
+        with pytest.raises(BudgetUnavailable):
+            world.verify_append_only_protection(client=client)
+    assert methods == ["GET", "POST"]
