@@ -6,7 +6,7 @@
         "month": "2026-11",
         "limit": 300000,
         "baseline": 100000,
-        "reserved": 100024,
+        "reserved": 102466,
         "reservations": {
           "44279335400": {
             "id": "bfd7499d7ce2474e9e3cca307db5cae6",
@@ -39,6 +39,14 @@
             "manifest_hash": "1f6aaad340e4c80fe05d8f7de08e962a1716b98c7d3c804a99561c8f42c076d1",
             "characters": 6,
             "created_at": "2026-11-18T10:28:34.063495+00:00"
+          },
+          "44454035771": {
+            "id": "522f1561bc52473493494c868368d45f",
+            "run_id": "44454035771",
+            "run_attempt": "1",
+            "manifest_hash": "dd0872b6199535e27825c774a2b44219763d77ee96655409f476869e8c0b0a3a",
+            "characters": 2442,
+            "created_at": "2026-11-19T03:50:30.600295+00:00"
           }
         }
       }
@@ -118,5 +126,11 @@
     "2026-11-17": "accepted-a530213b6bc4c5bd108e19a3aeb2aed5f20487c52d199f9b131aaa4a11819567",
     "2026-11-18": "accepted-444328cee3d07d0e454bad9a9c18b1e78aa75caf77ca40f317f64fc8b425cb45"
   },
-  "delivery_intents": {}
+  "delivery_intents": {
+    "2026-11-19": {
+      "attempt_id": "world-c96256b0a5484d47a01a3d0f426c3a8a",
+      "created_at": "2026-11-19T03:50:14.723396Z",
+      "status": "reserved"
+    }
+  }
 }
