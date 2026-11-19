@@ -1,4 +1,5 @@
 {
+  "translation_budget": null,
   "last_success_at": "2026-11-18T11:54:31.430734+08:00",
   "sent_dates": {
     "2026-09-09": "accepted-e80f75281486ec90cd8c6437b4b474f81cd6b1abf0a35009f04ae5834e450c4a",
@@ -73,5 +74,11 @@
     "2026-11-17": "accepted-818cdb2dd5f6ef276a1c231539bce7439d69454d7e29e8f2d2eb4f5495450c0b",
     "2026-11-18": "accepted-7bbb6ea93cf0fbba3c1082e732fe1b3aca5d69eba851384ada23b1356a2466a4"
   },
-  "delivery_intents": {}
+  "delivery_intents": {
+    "2026-11-19": {
+      "attempt_id": "gh-44454364838-1",
+      "created_at": "2026-11-19T11:52:14.776773+08:00",
+      "status": "reserved"
+    }
+  }
 }
