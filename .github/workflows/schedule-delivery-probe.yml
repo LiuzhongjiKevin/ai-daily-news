@@ -1,0 +1,21 @@
+name: Schedule Delivery Probe
+
+on:
+  schedule:
+    - cron: "13 4 * * *"
+    - cron: "19 12 * * *"
+      timezone: "Asia/Shanghai"
+
+permissions: {}
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Record schedule delivery
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          printf 'schedule=%s\n' "$SCHEDULE"
+          date -u '+started_utc=%Y-%m-%dT%H:%M:%SZ'
