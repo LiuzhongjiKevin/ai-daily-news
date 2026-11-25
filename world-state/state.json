@@ -6,7 +6,7 @@
         "month": "2026-11",
         "limit": 300000,
         "baseline": 100000,
-        "reserved": 128552,
+        "reserved": 130024,
         "reservations": {
           "44279335400": {
             "id": "bfd7499d7ce2474e9e3cca307db5cae6",
@@ -143,6 +143,14 @@
             "manifest_hash": "0da199108b8cc8820e21e871d88df001dd1640a829542f30d9a60a2ac9693d0a",
             "characters": 2749,
             "created_at": "2026-11-25T05:01:49.131835+00:00"
+          },
+          "45550884368": {
+            "id": "6aa16d1d90694e09a5e08f38cd88794c",
+            "run_id": "45550884368",
+            "run_attempt": "1",
+            "manifest_hash": "e881c195e3fe7367151d6086075f44e8cf24519f359048e18f397224c119f2be",
+            "characters": 1472,
+            "created_at": "2026-11-25T05:04:29.666876+00:00"
           }
         }
       }
